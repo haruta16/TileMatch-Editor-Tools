@@ -394,6 +394,9 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
             public bool DynamicAnalysisEnabled { get; set; } = true;                           // 是否启用动态分析
             public DynamicComplexityAnalyzer.DynamicComplexityMetrics DynamicMetrics { get; set; } = null;  // 动态指标数据
             public string DynamicAnalysisError { get; set; } = null;                            // 动态分析错误信息
+
+            // 🆕 算法对比结果数据
+            public DynamicComplexityAnalyzer.AlgorithmComparisonResult ComparisonResult { get; set; } = null;  // 算法对比结果
         }
 
 
@@ -465,8 +468,9 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
                     throw new System.Exception("算法内部的详细评估结果为空，可能算法执行失败");
                 }
 
-                // 第五步: 动态复杂度分析 (可选)
+                // 第五步: 动态复杂度分析 - 对比两种算法 (可选)
                 DynamicComplexityAnalyzer.DynamicComplexityMetrics dynamicMetrics = null;
+                DynamicComplexityAnalyzer.AlgorithmComparisonResult comparisonResult = null;
                 string dynamicError = null;
                 bool dynamicEnabled = true;
 
@@ -475,10 +479,53 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
                     try
                     {
                         dynamicEnabled = true;
-                        dynamicMetrics = DynamicComplexityAnalyzer.AnalyzeGameplayComplexity(
-                            tiles, experienceMode, algorithm.LastTerrainAnalysis
+
+                        // 运行算法对比测试 - 同时运行两种算法
+                        comparisonResult = DynamicComplexityAnalyzer.CompareAlgorithms(
+                            tiles,
+                            experienceMode,
+                            algorithm.LastTerrainAnalysis,
+                            DynamicComplexityAnalyzer.AlgorithmType.OptimalDFS,
+                            DynamicComplexityAnalyzer.AlgorithmType.BattleAnalyzer
                         );
-                        Debug.Log($"动态分析完成 {levelName}: {dynamicMetrics.CompletionStatus}, 移动{dynamicMetrics.TotalMoves}步, 耗时{dynamicMetrics.GameDurationMs}ms");
+
+                        // 使用OptimalDFS的结果作为主要动态指标（向后兼容）
+                        dynamicMetrics = comparisonResult.Algorithm1Metrics;
+
+                        // 详细输出对比结果
+                        if (!string.IsNullOrEmpty(comparisonResult.ErrorMessage))
+                        {
+                            Debug.LogWarning($"算法对比部分失败 {levelName}: {comparisonResult.ErrorMessage}");
+                        }
+                        else
+                        {
+                            var opt = comparisonResult.Algorithm1Metrics;
+                            var battle = comparisonResult.Algorithm2Metrics;
+
+                            Debug.Log($"=== 算法性能对比 {levelName} ===");
+                            Debug.Log($"OptimalDFS算法: {opt?.CompletionStatus}, 移动{opt?.TotalMoves}步, 耗时{opt?.GameDurationMs}ms");
+                            Debug.Log($"BattleAnalyzer算法: {battle?.CompletionStatus}, 移动{battle?.TotalMoves}步, 耗时{battle?.GameDurationMs}ms");
+                            Debug.Log($"移动步数差异: {comparisonResult.MoveDifference} (优胜者: {comparisonResult.WinnerByMoves})");
+                            Debug.Log($"执行时间差异: {comparisonResult.TimeDifference}ms (优胜者: {comparisonResult.WinnerByTime})");
+                            Debug.Log($"结果一致性: {comparisonResult.SameResult}");
+
+                            // 输出更详细的统计信息
+                            if (opt != null)
+                            {
+                                var minPeak = opt.GetMetric<int>("MinPeakDock", -1);
+                                var expandedNodes = opt.GetMetric<int>("ExpandedNodes", 0);
+                                var visitedStates = opt.GetMetric<int>("VisitedStates", 0);
+                                Debug.Log($"OptimalDFS详细: MinPeakDock={minPeak}, 扩展节点={expandedNodes}, 访问状态={visitedStates}");
+                            }
+
+                            if (battle != null)
+                            {
+                                var analysisCalls = battle.GetMetric<int>("TotalAnalysisCalls", 0);
+                                var analysisTime = battle.GetMetric<int>("AnalysisTimeMs", 0);
+                                var successMoves = battle.GetMetric<int>("SuccessfulMoves", 0);
+                                Debug.Log($"BattleAnalyzer详细: 分析调用={analysisCalls}次, 分析耗时={analysisTime}ms, 成功移动={successMoves}次");
+                            }
+                        }
                     }
                     catch (Exception dynamicEx)
                     {
@@ -531,7 +578,8 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
                     // 动态复杂度分析结果
                     DynamicAnalysisEnabled = dynamicEnabled,
                     DynamicMetrics = dynamicMetrics,
-                    DynamicAnalysisError = dynamicError
+                    DynamicAnalysisError = dynamicError,
+                    ComparisonResult = comparisonResult
                 };
             }
             catch (Exception ex)
@@ -555,7 +603,8 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
                     // 🆕 错误情况下的动态分析状态
                     DynamicAnalysisEnabled = false,
                     DynamicMetrics = null,
-                    DynamicAnalysisError = "Static analysis failed, dynamic analysis skipped"
+                    DynamicAnalysisError = "Static analysis failed, dynamic analysis skipped",
+                    ComparisonResult = null
                 };
             }
         }
@@ -662,6 +711,7 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
                 Debug.Log($"体验模式枚举: {config.ExperienceConfigEnum}");
                 Debug.Log($"花色数量枚举: {config.ColorCountConfigEnum}");
                 Debug.Log($"测试关卡数量: {levelCount}个");
+                Debug.Log($"算法对比: 同时运行OptimalDFS和BattleAnalyzer两种算法");
                 Debug.Log($"动态分析: {(ENABLE_DYNAMIC_ANALYSIS ? "启用" : "禁用")}");
                 Debug.Log($"使用固定随机种子: {FIXED_RANDOM_SEED} (确保结果可重现)");
                 
@@ -710,7 +760,10 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
                                              "ProcessingTimeMs,EvaluationTime,ErrorMessage," +
                                              "DynamicAnalysisEnabled,TotalMoves,GameDurationMs,GameCompleted,CompletionStatus,DynamicAnalysisError," +
                                              "MinPeakDock,ExpandedNodes,VisitedStates,SolveTimeMs," +
-                                             "OptimalTileIdSequence,DockCountPerMove,PeakDockDuringSolution";
+                                             "OptimalTileIdSequence,DockCountPerMove,PeakDockDuringSolution," +
+                                             "BattleAnalyzer_TotalMoves,BattleAnalyzer_GameDurationMs,BattleAnalyzer_CompletionStatus," +
+                                             "BattleAnalyzer_AnalysisCalls,BattleAnalyzer_AnalysisTimeMs,BattleAnalyzer_SuccessfulMoves," +
+                                             "MoveDifference,TimeDifference,WinnerByMoves,WinnerByTime,SameResult";
 
             /// <summary>
             /// CSV字段转义 - 内联工具方法
@@ -721,7 +774,7 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
                 "\"" + field.Replace("\"", "\"\"") + "\"" : field;
 
             /// <summary>
-            /// 格式化动态分析字段
+            /// 格式化动态分析字段（包含对比数据）
             /// </summary>
             public static string FormatDynamicFields(DetailedEvaluationResult result)
             {
@@ -741,6 +794,35 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
                         : "";
                     int peakDock = result.DynamicMetrics.PeakDockDuringSolution;
 
+                    // BattleAnalyzer对比数据
+                    string battleAnalyzerFields = "";
+                    if (result.ComparisonResult != null && result.ComparisonResult.Algorithm2Metrics != null)
+                    {
+                        var battle = result.ComparisonResult.Algorithm2Metrics;
+                        var analysisCalls = battle.GetMetric<int>("TotalAnalysisCalls", 0);
+                        var analysisTime = battle.GetMetric<int>("AnalysisTimeMs", 0);
+                        var successMoves = battle.GetMetric<int>("SuccessfulMoves", 0);
+
+                        battleAnalyzerFields = string.Join(",",
+                            battle.TotalMoves.ToString(),
+                            battle.GameDurationMs.ToString(),
+                            Escape(battle.CompletionStatus ?? ""),
+                            analysisCalls.ToString(),
+                            analysisTime.ToString(),
+                            successMoves.ToString(),
+                            result.ComparisonResult.MoveDifference.ToString(),
+                            result.ComparisonResult.TimeDifference.ToString(),
+                            Escape(result.ComparisonResult.WinnerByMoves ?? ""),
+                            Escape(result.ComparisonResult.WinnerByTime ?? ""),
+                            result.ComparisonResult.SameResult.ToString()
+                        );
+                    }
+                    else
+                    {
+                        // 无对比数据时填充空值
+                        battleAnalyzerFields = "0,0,,0,0,0,0,0,,,False";
+                    }
+
                     return string.Join(",",
                         "True",
                         result.DynamicMetrics.TotalMoves.ToString(),
@@ -749,14 +831,16 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
                         Escape(result.DynamicMetrics.CompletionStatus ?? ""),
                         Escape(result.DynamicAnalysisError ?? ""),
                         minPeak.ToString(), expanded.ToString(), visited.ToString(), solveMs.ToString(),
-                        Escape(seq), Escape(docks), peakDock.ToString()
+                        Escape(seq), Escape(docks), peakDock.ToString(),
+                        battleAnalyzerFields
                     );
                 }
                 return string.Join(",", "False", "0", "0", "False",
                     Escape("Not_Analyzed"),
                     Escape(result.DynamicAnalysisError ?? "Dynamic_Analysis_Disabled"),
                     "-1", "0", "0", "0",
-                    "", "", "0");
+                    "", "", "0",
+                    "0", "0", "", "0", "0", "0", "0", "0", "", "", "False");
             }
 
             /// <summary>

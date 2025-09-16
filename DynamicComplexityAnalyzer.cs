@@ -289,6 +289,279 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
         }
 
         /// <summary>
+        /// 基于TileMatchBattleAnalyzerMgr算法的自动游玩策略
+        /// 复用现有算法进行贪心选择，用于对比测试
+        /// </summary>
+        private class BattleAnalyzerAutoPlayStrategy : IAutoPlayStrategy
+        {
+            public string StrategyName => "BattleAnalyzer-Greedy";
+
+            private Dictionary<int, List<MatchGroup>> matchGroups;
+            private Dictionary<int, TileInfo> tileMap;
+            private List<TileInfo> allTileInfos;
+
+            // 公开的统计数据
+            public long AnalysisTimeMs { get; private set; } = 0;
+            public int TotalAnalysisCalls { get; private set; } = 0;
+            public int SuccessfulMoves { get; private set; } = 0;
+
+            private class TileInfo
+            {
+                public int Id;
+                public int Element;
+                public int[] Deps;
+                public PileType PileType = PileType.Desk;
+                public bool IsDestroyed = false;
+            }
+
+            private class MatchGroup
+            {
+                public List<TileInfo> matchTiles;
+                public int totalCost;
+                public HashSet<int> path;
+            }
+
+            public void Initialize(List<Tile> allTiles)
+            {
+                tileMap = new Dictionary<int, TileInfo>(allTiles.Count);
+                allTileInfos = new List<TileInfo>(allTiles.Count);
+
+                foreach (var t in allTiles)
+                {
+                    var info = new TileInfo
+                    {
+                        Id = t.ID,
+                        Element = t.ElementValue,
+                        Deps = t.Dependencies ?? System.Array.Empty<int>(),
+                        PileType = t.PileType,
+                        IsDestroyed = false
+                    };
+                    tileMap[t.ID] = info;
+                    allTileInfos.Add(info);
+                }
+            }
+
+            public Tile SelectNextTile(List<Tile> clickableTiles, GameStateSnapshot currentState)
+            {
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                TotalAnalysisCalls++;
+
+                try
+                {
+                    // 更新瓦片状态
+                    UpdateTileStates(currentState);
+
+                    // 执行分析
+                    AnalyzeCurrentState();
+
+                    // 选择最佳移动
+                    var bestTile = SelectBestMove(clickableTiles);
+
+                    if (bestTile != null)
+                        SuccessfulMoves++;
+
+                    return bestTile;
+                }
+                finally
+                {
+                    sw.Stop();
+                    AnalysisTimeMs += sw.ElapsedMilliseconds;
+                }
+            }
+
+            private void UpdateTileStates(GameStateSnapshot currentState)
+            {
+                // 重置所有瓦片状态
+                foreach (var info in allTileInfos)
+                {
+                    info.PileType = PileType.Desk;
+                    info.IsDestroyed = false;
+                }
+
+                // 更新Dock中的瓦片
+                if (currentState.DockTiles != null)
+                {
+                    foreach (var dockTile in currentState.DockTiles)
+                    {
+                        if (tileMap.TryGetValue(dockTile.ID, out var info))
+                        {
+                            info.PileType = PileType.Dock;
+                        }
+                    }
+                }
+
+                // 标记已销毁的瓦片（不在Desk也不在Dock中的）
+                var deskIds = currentState.DeskTiles?.Select(t => t.ID).ToHashSet() ?? new HashSet<int>();
+                var dockIds = currentState.DockTiles?.Select(t => t.ID).ToHashSet() ?? new HashSet<int>();
+
+                foreach (var info in allTileInfos)
+                {
+                    if (!deskIds.Contains(info.Id) && !dockIds.Contains(info.Id))
+                    {
+                        info.IsDestroyed = true;
+                    }
+                }
+            }
+
+            private void AnalyzeCurrentState()
+            {
+                // 获取所有元素类型
+                var elementValues = allTileInfos.Where(t => !t.IsDestroyed)
+                    .Select(t => t.Element).Distinct().ToList();
+
+                matchGroups = new Dictionary<int, List<MatchGroup>>();
+
+                foreach (var elementValue in elementValues)
+                {
+                    matchGroups[elementValue] = new List<MatchGroup>();
+                    GetAllMatches(elementValue);
+                }
+            }
+
+            private void GetAllMatches(int elementValue)
+            {
+                // 获取该花色的所有未销毁Tile
+                var allElementValueTiles = allTileInfos
+                    .Where(t => t.Element == elementValue && !t.IsDestroyed)
+                    .ToList();
+
+                if (allElementValueTiles.Count < 3)
+                    return;
+
+                // 按深度排序（模拟runtimeDependencies.Count + 1的逻辑）
+                allElementValueTiles.Sort((a, b) =>
+                {
+                    int depthA = a.PileType == PileType.Dock ? 0 : CalculateDepth(a) + 1;
+                    int depthB = b.PileType == PileType.Dock ? 0 : CalculateDepth(b) + 1;
+                    return depthA.CompareTo(depthB);
+                });
+
+                // 生成所有可能的3个Tile组合
+                var matchGroups = new List<MatchGroup>();
+
+                for (int i = 0; i < allElementValueTiles.Count - 2; i++)
+                {
+                    for (int j = i + 1; j < allElementValueTiles.Count - 1; j++)
+                    {
+                        for (int k = j + 1; k < allElementValueTiles.Count; k++)
+                        {
+                            var matchTiles = new List<TileInfo>
+                            {
+                                allElementValueTiles[i],
+                                allElementValueTiles[j],
+                                allElementValueTiles[k]
+                            };
+
+                            int cost = CalculateCost(matchTiles, out HashSet<int> path);
+
+                            var matchGroup = new MatchGroup
+                            {
+                                matchTiles = matchTiles,
+                                totalCost = cost,
+                                path = path
+                            };
+
+                            matchGroups.Add(matchGroup);
+                        }
+                    }
+                }
+
+                // 按Cost排序，Cost越小越优先
+                matchGroups.Sort((a, b) => a.totalCost.CompareTo(b.totalCost));
+                this.matchGroups[elementValue] = matchGroups;
+            }
+
+            private int CalculateDepth(TileInfo tile)
+            {
+                // 简化的深度计算，基于直接依赖数量
+                return tile.Deps?.Length ?? 0;
+            }
+
+            private int CalculateCost(List<TileInfo> matchTiles, out HashSet<int> path)
+            {
+                var allDependencies = new HashSet<int>();
+                int totalCost = 0;
+
+                foreach (var tile in matchTiles)
+                {
+                    if (tile.PileType == PileType.Dock) // 已经在Dock区域的，不需要Cost
+                        continue;
+
+                    // 递归收集所有依赖的Tile ID
+                    CollectAllDependencies(tile, allDependencies);
+                    allDependencies.Add(tile.Id);
+                }
+
+                totalCost += allDependencies.Count;
+                path = allDependencies;
+                return totalCost;
+            }
+
+            private void CollectAllDependencies(TileInfo tile, HashSet<int> allDependencies)
+            {
+                if (tile?.Deps == null || tile.Deps.Length == 0)
+                    return;
+
+                foreach (var depId in tile.Deps)
+                {
+                    // 如果这个依赖ID还没有被添加过
+                    if (allDependencies.Add(depId))
+                    {
+                        // 获取依赖的Tile对象
+                        if (tileMap.TryGetValue(depId, out TileInfo depTile) && !depTile.IsDestroyed)
+                        {
+                            // 递归收集这个依赖Tile的依赖
+                            CollectAllDependencies(depTile, allDependencies);
+                        }
+                    }
+                }
+            }
+
+            private Tile SelectBestMove(List<Tile> clickableTiles)
+            {
+                if (matchGroups == null || clickableTiles.Count == 0)
+                    return clickableTiles.FirstOrDefault();
+
+                Tile bestTile = null;
+                int bestCost = int.MaxValue;
+                int bestElementValue = -1;
+
+                // 遍历所有可点击瓦片，找到成本最低的选择
+                foreach (var tile in clickableTiles)
+                {
+                    int elementValue = tile.ElementValue;
+
+                    if (!matchGroups.TryGetValue(elementValue, out var groups) || groups.Count == 0)
+                        continue;
+
+                    // 找到包含当前瓦片的最佳组合
+                    var bestGroupForTile = groups.FirstOrDefault(g =>
+                        g.matchTiles.Any(mt => mt.Id == tile.ID));
+
+                    if (bestGroupForTile != null && bestGroupForTile.totalCost < bestCost)
+                    {
+                        bestCost = bestGroupForTile.totalCost;
+                        bestTile = tile;
+                        bestElementValue = elementValue;
+                    }
+                }
+
+                // 如果没有找到合适的，就选择第一个可用的
+                return bestTile ?? clickableTiles.FirstOrDefault();
+            }
+
+            public void Reset()
+            {
+                matchGroups?.Clear();
+                tileMap?.Clear();
+                allTileInfos?.Clear();
+                AnalysisTimeMs = 0;
+                TotalAnalysisCalls = 0;
+                SuccessfulMoves = 0;
+            }
+        }
+
+        /// <summary>
         /// 默认动态指标计算器 - 基础指标计算
         /// </summary>
         private class DefaultMetricsCalculator : IDynamicMetricsCalculator
@@ -333,11 +606,22 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
         #region 公共API接口
 
         /// <summary>
+        /// 算法类型枚举
+        /// </summary>
+        public enum AlgorithmType
+        {
+            OptimalDFS,         // 原有的最优DFS算法
+            BattleAnalyzer,     // TileMatchBattleAnalyzerMgr算法
+            DefaultGreedy       // 简单贪心算法
+        }
+
+        /// <summary>
         /// 纯动态分析方法 - 只负责动态指标计算，由BatchLevelEvaluatorSimple调用
         /// </summary>
         /// <param name="tiles">已分配花色的瓦片列表</param>
         /// <param name="experienceMode">体验模式配置</param>
         /// <param name="terrainAnalysis">已计算的地形分析结果</param>
+        /// <param name="algorithmType">使用的算法类型</param>
         /// <param name="strategy">可选的自定义策略</param>
         /// <param name="gameEngine">可选的自定义游戏引擎</param>
         /// <param name="metricsCalculator">可选的自定义指标计算器</param>
@@ -346,6 +630,7 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
             List<Tile> tiles,
             int[] experienceMode,
             TerrainAnalysisResult terrainAnalysis,
+            AlgorithmType algorithmType = AlgorithmType.OptimalDFS,
             IAutoPlayStrategy strategy = null,
             IGameRulesEngine gameEngine = null,
             IDynamicMetricsCalculator metricsCalculator = null)
@@ -357,7 +642,7 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
             {
                 // 使用默认实现或注入的自定义实现
                 var engine = gameEngine ?? new AutoPlayBasedGameEngine();
-                var autoStrategy = strategy ?? new OptimalAutoPlayStrategy();
+                var autoStrategy = strategy ?? CreateStrategy(algorithmType);
                 var calculator = metricsCalculator ?? new DefaultMetricsCalculator();
 
                 // 创建瓦片副本以避免修改原始数据
@@ -373,6 +658,99 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
                 metrics.GameDurationMs = (int)(DateTime.Now - startTime).TotalMilliseconds;
                 return metrics;
             }
+        }
+
+        /// <summary>
+        /// 对比测试方法 - 同时运行两种算法并返回比较结果
+        /// </summary>
+        /// <param name="tiles">已分配花色的瓦片列表</param>
+        /// <param name="experienceMode">体验模式配置</param>
+        /// <param name="terrainAnalysis">已计算的地形分析结果</param>
+        /// <param name="algorithm1">第一种算法类型</param>
+        /// <param name="algorithm2">第二种算法类型</param>
+        /// <returns>对比测试结果</returns>
+        public static AlgorithmComparisonResult CompareAlgorithms(
+            List<Tile> tiles,
+            int[] experienceMode,
+            TerrainAnalysisResult terrainAnalysis,
+            AlgorithmType algorithm1 = AlgorithmType.OptimalDFS,
+            AlgorithmType algorithm2 = AlgorithmType.BattleAnalyzer)
+        {
+            var result = new AlgorithmComparisonResult();
+            result.Algorithm1Type = algorithm1;
+            result.Algorithm2Type = algorithm2;
+
+            try
+            {
+                // 运行第一种算法
+                var metrics1 = AnalyzeGameplayComplexity(tiles, experienceMode, terrainAnalysis, algorithm1);
+                result.Algorithm1Metrics = metrics1;
+
+                // 运行第二种算法
+                var metrics2 = AnalyzeGameplayComplexity(tiles, experienceMode, terrainAnalysis, algorithm2);
+                result.Algorithm2Metrics = metrics2;
+
+                // 计算对比统计
+                result.CalculateComparison();
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"算法对比测试失败: {ex.Message}");
+                result.ErrorMessage = ex.Message;
+            }
+
+            return result;
+        }
+
+        /// <summary>
+        /// 算法对比结果数据结构
+        /// </summary>
+        [System.Serializable]
+        public class AlgorithmComparisonResult
+        {
+            public AlgorithmType Algorithm1Type { get; set; }
+            public AlgorithmType Algorithm2Type { get; set; }
+            public DynamicComplexityMetrics Algorithm1Metrics { get; set; }
+            public DynamicComplexityMetrics Algorithm2Metrics { get; set; }
+            public string ErrorMessage { get; set; } = "";
+
+            // 对比统计
+            public int MoveDifference { get; set; } = 0;  // 移动步数差异
+            public int TimeDifference { get; set; } = 0;  // 执行时间差异(ms)
+            public bool SameResult { get; set; } = false; // 是否得到相同结果
+            public string WinnerByMoves { get; set; } = ""; // 移动步数优胜者
+            public string WinnerByTime { get; set; } = "";  // 执行时间优胜者
+
+            public void CalculateComparison()
+            {
+                if (Algorithm1Metrics == null || Algorithm2Metrics == null)
+                    return;
+
+                MoveDifference = Algorithm1Metrics.TotalMoves - Algorithm2Metrics.TotalMoves;
+                TimeDifference = Algorithm1Metrics.GameDurationMs - Algorithm2Metrics.GameDurationMs;
+                SameResult = Algorithm1Metrics.CompletionStatus == Algorithm2Metrics.CompletionStatus &&
+                           Algorithm1Metrics.GameCompleted == Algorithm2Metrics.GameCompleted;
+
+                WinnerByMoves = MoveDifference == 0 ? "Tie" :
+                              (MoveDifference < 0 ? Algorithm1Type.ToString() : Algorithm2Type.ToString());
+
+                WinnerByTime = TimeDifference == 0 ? "Tie" :
+                             (TimeDifference < 0 ? Algorithm1Type.ToString() : Algorithm2Type.ToString());
+            }
+        }
+
+        /// <summary>
+        /// 根据算法类型创建对应的策略实例
+        /// </summary>
+        private static IAutoPlayStrategy CreateStrategy(AlgorithmType algorithmType)
+        {
+            return algorithmType switch
+            {
+                AlgorithmType.OptimalDFS => new OptimalAutoPlayStrategy(),
+                AlgorithmType.BattleAnalyzer => new BattleAnalyzerAutoPlayStrategy(),
+                AlgorithmType.DefaultGreedy => new DefaultAutoPlayStrategy(),
+                _ => new OptimalAutoPlayStrategy()
+            };
         }
 
         #endregion
@@ -773,6 +1151,16 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
                     metrics.AddMetric("VisitedStates", (int)Math.Min(int.MaxValue, opt.VisitedStates));
                     metrics.AddMetric("ExpandedNodes", (int)Math.Min(int.MaxValue, opt.ExpandedNodes));
                     metrics.AddMetric("SolveTimeMs", (int)Math.Min(int.MaxValue, opt.SolveTimeMs));
+                }
+                // 写入BattleAnalyzer统计数据（若使用了BattleAnalyzer策略）
+                else if (strategy is BattleAnalyzerAutoPlayStrategy battleAnalyzer)
+                {
+                    metrics.AddMetric("AnalysisTimeMs", (int)Math.Min(int.MaxValue, battleAnalyzer.AnalysisTimeMs));
+                    metrics.AddMetric("TotalAnalysisCalls", battleAnalyzer.TotalAnalysisCalls);
+                    metrics.AddMetric("SuccessfulMoves", battleAnalyzer.SuccessfulMoves);
+                    metrics.AddMetric("AnalysisSuccessRate",
+                        battleAnalyzer.TotalAnalysisCalls > 0 ?
+                        (double)battleAnalyzer.SuccessfulMoves / battleAnalyzer.TotalAnalysisCalls : 0.0);
                 }
 
                 return metrics;
