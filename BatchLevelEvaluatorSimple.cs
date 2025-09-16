@@ -429,11 +429,10 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
         public static DetailedEvaluationResult EvaluateRealLevel(string levelName, int[] experienceMode, string playerType, int? colorCount = null, int uniqueID = 0)
         {
             var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-            
+
             try
             {
-                // 第零步: 设置固定随机种子确保结果可重现
-                UnityEngine.Random.InitState(FIXED_RANDOM_SEED);
+                // 注意：随机种子已在批量评估开始时统一设置，此处无需重复设置
                 
                 // 第一步: 加载真实关卡数据
                 var levelData = LoadLevelData(levelName);
@@ -447,7 +446,7 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
                 
                 // 第三步: 运行RuleBased算法进行花色分配
                 var algorithm = new RuleBasedAlgorithm();
-                algorithm.InitializeRandomSeed(FIXED_RANDOM_SEED); // 使用固定种子确保结果可重现
+                // 注意：随机种子已统一设置，算法将继承全局种子状态
 
                 // 使用自定义花色数量或默认关卡配置
                 int requestedColorCount = colorCount ?? levelData.ElementsPerLevel;
@@ -574,35 +573,37 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
             Action<BatchProgress> progressCallback = null)
         {
             if (config == null) config = new SimplifiedBatchConfiguration();
-            
+
             // 设置固定随机种子确保批量评估结果可重现
             UnityEngine.Random.InitState(FIXED_RANDOM_SEED);
             Debug.Log($"批量评估使用固定随机种子: {FIXED_RANDOM_SEED}");
             Debug.Log($"体验模式枚举: {config.ExperienceConfigEnum}");
             Debug.Log($"花色数量枚举: {config.ColorCountConfigEnum}");
-            
+
             var results = new List<DetailedEvaluationResult>();
             var startTime = DateTime.Now;
             int currentUniqueID = 1;
             int completedTasks = 0;
-            
-            // 计算总任务数
+
+            // 🚀 优化：预计算所有关卡的配置，避免重复解析
+            var levelConfigs = new Dictionary<string, (int[][] experienceModes, int[] colorCounts)>();
             int totalTasks = 0;
+
             foreach (var levelName in levelNames)
             {
                 var experienceModes = CsvConfigurationResolver.ResolveExperienceModes(config.ExperienceConfigEnum, levelName);
                 var colorCounts = CsvConfigurationResolver.ResolveColorCounts(config.ColorCountConfigEnum, levelName);
+                levelConfigs[levelName] = (experienceModes, colorCounts);
                 totalTasks += experienceModes.Length * config.PlayerTypesToEvaluate.Length * colorCounts.Length;
             }
-            
+
             Debug.Log($"开始简化批量评估: {levelNames.Count} 个关卡 = {totalTasks} 个任务");
-            
-            // 执行评估
+
+            // 执行评估 - 使用预计算的配置
             foreach (var levelName in levelNames)
             {
-                var experienceModes = CsvConfigurationResolver.ResolveExperienceModes(config.ExperienceConfigEnum, levelName);
-                var colorCounts = CsvConfigurationResolver.ResolveColorCounts(config.ColorCountConfigEnum, levelName);
-                
+                var (experienceModes, colorCounts) = levelConfigs[levelName];
+
                 foreach (var experienceMode in experienceModes)
                 {
                     foreach (var playerType in config.PlayerTypesToEvaluate)
@@ -614,7 +615,7 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
                             results.Add(result);
                             currentUniqueID++;
                             completedTasks++;
-                            
+
                             // 更新进度
                             var elapsed = DateTime.Now - startTime;
                             var taskName = $"{levelName}-[{experienceMode[0]},{experienceMode[1]},{experienceMode[2]}]-{playerType}-{colorCount}";
@@ -630,10 +631,13 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
                     }
                 }
             }
-            
+
             var totalTime = DateTime.Now - startTime;
             Debug.Log($"简化批量评估完成: 处理了 {results.Count} 个结果，总耗时 {totalTime:hh\\:mm\\:ss}");
-            
+
+            // 🚀 优化：批量评估完成后清理缓存，释放内存
+            ClearAllCaches();
+
             return results;
         }
 
@@ -848,10 +852,31 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
         }
 
         /// <summary>
-        /// 加载关卡数据 - 从JSON文件加载
+        /// 缓存的关卡数据 - 避免重复文件I/O
+        /// </summary>
+        private static Dictionary<string, LevelData> _cachedLevelData = new Dictionary<string, LevelData>();
+
+        /// <summary>
+        /// 清理所有缓存 - 释放内存，通常在批量评估完成后调用
+        /// </summary>
+        public static void ClearAllCaches()
+        {
+            _cachedLevelData?.Clear();
+            _cachedAvailableElementValues = null;
+            Debug.Log("[BatchLevelEvaluator] 所有缓存已清理");
+        }
+
+        /// <summary>
+        /// 加载关卡数据 - 带缓存的从JSON文件加载
         /// </summary>
         private static LevelData LoadLevelData(string levelName)
         {
+            // 🚀 优化：使用缓存避免重复文件I/O
+            if (_cachedLevelData.TryGetValue(levelName, out var cachedData))
+            {
+                return cachedData;
+            }
+
             try
             {
                 // 根据levelName生成对应的JSON文件名
@@ -868,29 +893,33 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
                     // 直接使用levelName作为文件名
                     jsonFileName = levelName.EndsWith(".json") ? levelName : $"{levelName}.json";
                 }
-                
+
                 // 构造JSON文件路径
                 string jsonPath = Path.Combine(Application.dataPath, "..", "Tools", "Config", "Json", "Levels", jsonFileName);
                 jsonPath = Path.GetFullPath(jsonPath); // 规范化路径
-                
+
                 if (!File.Exists(jsonPath))
                 {
                     Debug.LogError($"关卡JSON文件不存在: {jsonPath}");
+                    _cachedLevelData[levelName] = null; // 缓存失败结果，避免重复尝试
                     return null;
                 }
-                
+
                 // 读取JSON文件内容
                 string jsonContent = File.ReadAllText(jsonPath);
-                
+
                 // 反序列化为LevelData对象
                 LevelData levelData = JsonUtility.FromJson<LevelData>(jsonContent);
-                
-                Debug.Log($"成功加载关卡数据: {levelName} -> {jsonFileName}");
+
+                // 缓存成功加载的数据
+                _cachedLevelData[levelName] = levelData;
+                Debug.Log($"成功加载并缓存关卡数据: {levelName} -> {jsonFileName}");
                 return levelData;
             }
             catch (Exception ex)
             {
                 Debug.LogError($"加载关卡数据失败 {levelName}: {ex.Message}");
+                _cachedLevelData[levelName] = null; // 缓存失败结果，避免重复尝试
                 return null;
             }
         }
@@ -948,34 +977,48 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
         }
 
         /// <summary>
-        /// 获取可用的ElementValue数组 - 动态读取LevelDatabase
+        /// 缓存的ElementValue数组 - 避免重复加载Resources
+        /// </summary>
+        private static int[] _cachedAvailableElementValues = null;
+
+        /// <summary>
+        /// 获取可用的ElementValue数组 - 带缓存的动态读取LevelDatabase
         /// </summary>
         private static int[] GetAvailableElementValues()
         {
+            // 🚀 优化：使用缓存避免重复加载Resources
+            if (_cachedAvailableElementValues != null)
+            {
+                return _cachedAvailableElementValues;
+            }
+
             try
             {
                 // 尝试加载LevelDatabase
                 var levelDatabase = UnityEngine.Resources.Load<LevelDatabase>("StaticSettings/LevelDatabase");
                 if (levelDatabase != null && levelDatabase.Tiles != null)
                 {
-                    return levelDatabase.Tiles
+                    _cachedAvailableElementValues = levelDatabase.Tiles
                         .Where(tile => tile != null && tile.ElementValue > 0)
                         .Select(tile => tile.ElementValue)
                         .Distinct()
                         .OrderBy(x => x)
                         .ToArray();
+
+                    Debug.Log($"[BatchLevelEvaluator] 成功加载LevelDatabase，发现 {_cachedAvailableElementValues.Length} 种可用花色并已缓存");
+                    return _cachedAvailableElementValues;
                 }
             }
             catch (System.Exception ex)
             {
                 Debug.LogWarning($"[BatchLevelEvaluator] 无法加载LevelDatabase: {ex.Message}");
             }
-            
-            // 回退到标准花色池
-            return new int[] { 101, 102, 103, 201, 202, 301, 302, 401, 402, 403, 501, 502, 601, 602, 701, 702, 703, 801, 802 };
+
+            // 回退到标准花色池并缓存
+            _cachedAvailableElementValues = new int[] { 101, 102, 103, 201, 202, 301, 302, 401, 402, 403, 501, 502, 601, 602, 701, 702, 703, 801, 802 };
+            Debug.Log($"[BatchLevelEvaluator] 使用标准花色池，共 {_cachedAvailableElementValues.Length} 种花色并已缓存");
+            return _cachedAvailableElementValues;
         }
-
-
 
         /// <summary>
         /// 将Level_001格式转换为JSON文件编号格式 (如100001)
