@@ -323,6 +323,11 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
         // ========================================
         
         /// <summary>
+        /// 静态复杂度分析开关 - true启用静态分析，false禁用静态分析
+        /// </summary>
+        private static readonly bool ENABLE_STATIC_ANALYSIS = true; // 默认启用静态分析
+
+        /// <summary>
         /// 动态复杂度分析开关 - true启用动态分析，false仅静态分析
         /// </summary>
         private static readonly bool ENABLE_DYNAMIC_ANALYSIS = true; // 默认启用动态分析（使用最优策略）
@@ -387,7 +392,6 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
             public int Grade { get; set; }               // 难度等级(数字: 1-5)
 
             public int ProcessingTimeMs { get; set; }    // 处理耗时(毫秒)
-            public DateTime EvaluationTime { get; set; } // 评估时间
             public string ErrorMessage { get; set; }     // 错误信息(如果有)
 
             // 🆕 动态复杂度分析数据
@@ -447,32 +451,39 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
                 // 第二步: 创建Tile列表
                 var tiles = CreateTileListFromLevelData(levelData);
                 
-                // 第三步: 运行RuleBased算法进行花色分配
-                var algorithm = new RuleBasedAlgorithm();
-                // 注意：随机种子已统一设置，算法将继承全局种子状态
+                // 第三步: 运行RuleBased算法进行花色分配 (可选)
+                LevelEvaluationReporter.DetailedEvaluationResult detailedEvaluation = null;
+                string actualAlgorithmName = "RuleBased-V1.1";
+                int actualColorCount = colorCount ?? levelData.ElementsPerLevel;
 
-                // 使用自定义花色数量或默认关卡配置
-                int requestedColorCount = colorCount ?? levelData.ElementsPerLevel;
-                var availableColors = CreateAvailableColors(requestedColorCount);
-                int actualColorCount = availableColors.Count; // 实际使用的花色数量
-                algorithm.AssignTileTypes(tiles, experienceMode, availableColors);
-
-                // 获取实际算法名称
-                string actualAlgorithmName = algorithm.AlgorithmName;
-
-                // 第四步: 直接使用算法内部计算的详细评估结果，避免重复计算
-                var detailedEvaluation = algorithm.LastDetailedEvaluationResult;
-
-                if (detailedEvaluation == null)
+                if (ENABLE_STATIC_ANALYSIS)
                 {
-                    throw new System.Exception("算法内部的详细评估结果为空，可能算法执行失败");
+                    var algorithm = new RuleBasedAlgorithm();
+                    // 注意：随机种子已统一设置，算法将继承全局种子状态
+
+                    // 使用自定义花色数量或默认关卡配置
+                    int requestedColorCount = colorCount ?? levelData.ElementsPerLevel;
+                    var availableColors = CreateAvailableColors(requestedColorCount);
+                    actualColorCount = availableColors.Count; // 实际使用的花色数量
+                    algorithm.AssignTileTypes(tiles, experienceMode, availableColors);
+
+                    // 获取实际算法名称
+                    actualAlgorithmName = algorithm.AlgorithmName;
+
+                    // 第四步: 直接使用算法内部计算的详细评估结果，避免重复计算
+                    detailedEvaluation = algorithm.LastDetailedEvaluationResult;
+
+                    if (detailedEvaluation == null)
+                    {
+                        throw new System.Exception("算法内部的详细评估结果为空，可能算法执行失败");
+                    }
                 }
 
                 // 第五步: 动态复杂度分析 - 对比两种算法 (可选)
                 DynamicComplexityAnalyzer.DynamicComplexityMetrics dynamicMetrics = null;
                 DynamicComplexityAnalyzer.AlgorithmComparisonResult comparisonResult = null;
                 string dynamicError = null;
-                bool dynamicEnabled = true;
+                bool dynamicEnabled = false;
 
                 if (ENABLE_DYNAMIC_ANALYSIS)
                 {
@@ -480,11 +491,19 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
                     {
                         dynamicEnabled = true;
 
+                        // 获取地形分析结果用于动态分析
+                        TerrainAnalysisResult terrainAnalysis = null;
+                        // 为动态分析创建一个临时算法实例
+                        var tempAlgorithm = new RuleBasedAlgorithm();
+                        var tempColors = CreateAvailableColors(actualColorCount);
+                        tempAlgorithm.AssignTileTypes(tiles, experienceMode, tempColors);
+                        terrainAnalysis = tempAlgorithm.LastTerrainAnalysis;
+
                         // 运行算法对比测试 - 同时运行两种算法
                         comparisonResult = DynamicComplexityAnalyzer.CompareAlgorithms(
                             tiles,
                             experienceMode,
-                            algorithm.LastTerrainAnalysis,
+                            terrainAnalysis,
                             DynamicComplexityAnalyzer.AlgorithmType.OptimalDFS,
                             DynamicComplexityAnalyzer.AlgorithmType.BattleAnalyzer
                         );
@@ -514,8 +533,7 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
                             {
                                 var minPeak = opt.GetMetric<int>("MinPeakDock", -1);
                                 var expandedNodes = opt.GetMetric<int>("ExpandedNodes", 0);
-                                var visitedStates = opt.GetMetric<int>("VisitedStates", 0);
-                                Debug.Log($"OptimalDFS详细: MinPeakDock={minPeak}, 扩展节点={expandedNodes}, 访问状态={visitedStates}");
+                                Debug.Log($"OptimalDFS详细: MinPeakDock={minPeak}, 扩展节点={expandedNodes}");
                             }
 
                             if (battle != null)
@@ -534,11 +552,19 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
                     }
                 }
 
-                // 第六步: 直接从详细评估结果提取所有指标，无需重复计算
-                var finalEval = detailedEvaluation.FinalEvaluation;
-                var terrainComplexity = detailedEvaluation.TerrainComplexity;
-                var colorComplexity = detailedEvaluation.ColorComplexity;
-                int grade = (int)finalEval.Grade;
+                // 第六步: 提取静态分析结果 (如果启用)
+                LevelEvaluationReporter.TerrainComplexity terrainComplexity = null;
+                LevelEvaluationReporter.ColorAssignmentComplexity colorComplexity = null;
+                LevelEvaluationReporter.FinalEvaluation finalEval = null;
+                int grade = 1;
+
+                if (ENABLE_STATIC_ANALYSIS && detailedEvaluation != null)
+                {
+                    finalEval = detailedEvaluation.FinalEvaluation;
+                    terrainComplexity = detailedEvaluation.TerrainComplexity;
+                    colorComplexity = detailedEvaluation.ColorComplexity;
+                    grade = (int)finalEval.Grade;
+                }
 
                 // 转换关卡名称
                 string jsonLevelName = ConvertToJsonLevelName(levelName);
@@ -555,24 +581,23 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
                     ColorCount = actualColorCount,
                     TotalTiles = CalculateTotalTileCount(levelData),
 
-                    // 8个指标值 - 直接从算法内部计算的详细评估结果提取
-                    V_Normalized = terrainComplexity.V_Normalized,
-                    E_Normalized = terrainComplexity.E_Normalized,
-                    A_Normalized = terrainComplexity.A_Normalized,
-                    C_Normalized = colorComplexity.C_Normalized,
-                    D_Normalized = colorComplexity.D_Normalized,
-                    G_Normalized = colorComplexity.G_Normalized,
-                    O_Normalized = colorComplexity.O_Normalized,
-                    M_Normalized = colorComplexity.M_Normalized,
+                    // 8个指标值 - 从静态分析结果提取 (如果启用)
+                    V_Normalized = terrainComplexity?.V_Normalized ?? 0f,
+                    E_Normalized = terrainComplexity?.E_Normalized ?? 0f,
+                    A_Normalized = terrainComplexity?.A_Normalized ?? 0f,
+                    C_Normalized = colorComplexity?.C_Normalized ?? 0f,
+                    D_Normalized = colorComplexity?.D_Normalized ?? 0f,
+                    G_Normalized = colorComplexity?.G_Normalized ?? 0f,
+                    O_Normalized = colorComplexity?.O_Normalized ?? 0f,
+                    M_Normalized = colorComplexity?.M_Normalized ?? 0f,
 
-                    // 加权计算结果 - 直接从算法内部计算的最终评估结果提取
-                    TerrainScore = finalEval.TerrainScore,
-                    ColorScore = finalEval.ColorScore,
-                    FinalScore = finalEval.FinalScore,
+                    // 加权计算结果 - 从静态分析结果提取 (如果启用)
+                    TerrainScore = finalEval?.TerrainScore ?? 0f,
+                    ColorScore = finalEval?.ColorScore ?? 0f,
+                    FinalScore = finalEval?.FinalScore ?? 0f,
                     Grade = grade,
 
                     ProcessingTimeMs = (int)stopwatch.ElapsedMilliseconds,
-                    EvaluationTime = DateTime.Now,
                     ErrorMessage = null,
 
                     // 动态复杂度分析结果
@@ -598,7 +623,6 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
                     TotalTiles = 0,
                     ErrorMessage = ex.Message,
                     ProcessingTimeMs = (int)stopwatch.ElapsedMilliseconds,
-                    EvaluationTime = DateTime.Now,
 
                     // 🆕 错误情况下的动态分析状态
                     DynamicAnalysisEnabled = false,
@@ -711,8 +735,9 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
                 Debug.Log($"体验模式枚举: {config.ExperienceConfigEnum}");
                 Debug.Log($"花色数量枚举: {config.ColorCountConfigEnum}");
                 Debug.Log($"测试关卡数量: {levelCount}个");
-                Debug.Log($"算法对比: 同时运行OptimalDFS和BattleAnalyzer两种算法");
+                Debug.Log($"静态分析: {(ENABLE_STATIC_ANALYSIS ? "启用" : "禁用")}");
                 Debug.Log($"动态分析: {(ENABLE_DYNAMIC_ANALYSIS ? "启用" : "禁用")}");
+                Debug.Log($"算法对比: 同时运行OptimalDFS和BattleAnalyzer两种算法");
                 Debug.Log($"使用固定随机种子: {FIXED_RANDOM_SEED} (确保结果可重现)");
                 
                 // 创建测试关卡名称
@@ -757,12 +782,13 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
                                              "V_Normalized,E_Normalized,A_Normalized," +
                                              "C_Normalized,D_Normalized,G_Normalized,O_Normalized,M_Normalized," +
                                              "TerrainScore,ColorScore,FinalScore,Grade," +
-                                             "ProcessingTimeMs,EvaluationTime,ErrorMessage," +
+                                             "ProcessingTimeMs,ErrorMessage," +
                                              "DynamicAnalysisEnabled,TotalMoves,GameDurationMs,GameCompleted,CompletionStatus,DynamicAnalysisError," +
-                                             "MinPeakDock,ExpandedNodes,VisitedStates,SolveTimeMs," +
+                                             "MinPeakDock,ExpandedNodes,SolveTimeMs," +
                                              "OptimalTileIdSequence,DockCountPerMove,PeakDockDuringSolution," +
                                              "BattleAnalyzer_TotalMoves,BattleAnalyzer_GameDurationMs,BattleAnalyzer_CompletionStatus," +
                                              "BattleAnalyzer_AnalysisCalls,BattleAnalyzer_AnalysisTimeMs,BattleAnalyzer_SuccessfulMoves," +
+                                             "BattleAnalyzer_TileIdSequence,BattleAnalyzer_DockCountPerMove," +
                                              "MoveDifference,TimeDifference,WinnerByMoves,WinnerByTime,SameResult";
 
             /// <summary>
@@ -782,26 +808,35 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
                 {
                     int minPeak = result.DynamicMetrics.GetMetric<int>("MinPeakDock", -1);
                     int expanded = result.DynamicMetrics.GetMetric<int>("ExpandedNodes", 0);
-                    int visited = result.DynamicMetrics.GetMetric<int>("VisitedStates", 0);
                     int solveMs = result.DynamicMetrics.GetMetric<int>("SolveTimeMs", 0);
 
-                    // 序列化最优解序列与每步Dock数量（用空格分隔，并整体加引号）
+                    // 序列化最优解序列与每步Dock数量（用逗号分隔，并整体加引号）
                     string seq = (result.DynamicMetrics.OptimalMoveTileIds != null && result.DynamicMetrics.OptimalMoveTileIds.Count > 0)
-                        ? "[" + string.Join(" ", result.DynamicMetrics.OptimalMoveTileIds) + "]"
+                        ? string.Join(",", result.DynamicMetrics.OptimalMoveTileIds)
                         : "";
                     string docks = (result.DynamicMetrics.DockCountPerMove != null && result.DynamicMetrics.DockCountPerMove.Count > 0)
-                        ? "[" + string.Join(" ", result.DynamicMetrics.DockCountPerMove) + "]"
+                        ? string.Join(",", result.DynamicMetrics.DockCountPerMove)
                         : "";
                     int peakDock = result.DynamicMetrics.PeakDockDuringSolution;
 
                     // BattleAnalyzer对比数据
                     string battleAnalyzerFields = "";
+                    string battleSeq = "";
+                    string battleDocks = "";
                     if (result.ComparisonResult != null && result.ComparisonResult.Algorithm2Metrics != null)
                     {
                         var battle = result.ComparisonResult.Algorithm2Metrics;
                         var analysisCalls = battle.GetMetric<int>("TotalAnalysisCalls", 0);
                         var analysisTime = battle.GetMetric<int>("AnalysisTimeMs", 0);
                         var successMoves = battle.GetMetric<int>("SuccessfulMoves", 0);
+
+                        // BattleAnalyzer的序列数据
+                        battleSeq = (battle.OptimalMoveTileIds != null && battle.OptimalMoveTileIds.Count > 0)
+                            ? string.Join(",", battle.OptimalMoveTileIds)
+                            : "";
+                        battleDocks = (battle.DockCountPerMove != null && battle.DockCountPerMove.Count > 0)
+                            ? string.Join(",", battle.DockCountPerMove)
+                            : "";
 
                         battleAnalyzerFields = string.Join(",",
                             battle.TotalMoves.ToString(),
@@ -810,6 +845,8 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
                             analysisCalls.ToString(),
                             analysisTime.ToString(),
                             successMoves.ToString(),
+                            Escape(battleSeq),
+                            Escape(battleDocks),
                             result.ComparisonResult.MoveDifference.ToString(),
                             result.ComparisonResult.TimeDifference.ToString(),
                             Escape(result.ComparisonResult.WinnerByMoves ?? ""),
@@ -820,7 +857,7 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
                     else
                     {
                         // 无对比数据时填充空值
-                        battleAnalyzerFields = "0,0,,0,0,0,0,0,,,False";
+                        battleAnalyzerFields = "0,0,,0,0,0,,,0,0,,,False";
                     }
 
                     return string.Join(",",
@@ -830,7 +867,7 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
                         result.DynamicMetrics.GameCompleted.ToString(),
                         Escape(result.DynamicMetrics.CompletionStatus ?? ""),
                         Escape(result.DynamicAnalysisError ?? ""),
-                        minPeak.ToString(), expanded.ToString(), visited.ToString(), solveMs.ToString(),
+                        minPeak.ToString(), expanded.ToString(), solveMs.ToString(),
                         Escape(seq), Escape(docks), peakDock.ToString(),
                         battleAnalyzerFields
                     );
@@ -838,9 +875,9 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
                 return string.Join(",", "False", "0", "0", "False",
                     Escape("Not_Analyzed"),
                     Escape(result.DynamicAnalysisError ?? "Dynamic_Analysis_Disabled"),
-                    "-1", "0", "0", "0",
+                    "-1", "0", "0",
                     "", "", "0",
-                    "0", "0", "", "0", "0", "0", "0", "0", "", "", "False");
+                    "0", "0", "", "0", "0", "0", "", "", "0", "0", "", "", "False");
             }
 
             /// <summary>
@@ -866,7 +903,6 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
                     result.Grade.ToString(),
                     // 元数据
                     result.ProcessingTimeMs.ToString(),
-                    result.EvaluationTime.ToString("yyyy-MM-dd HH:mm:ss"),
                     Escape(result.ErrorMessage ?? ""),
                     // 动态分析
                     FormatDynamicFields(result)
@@ -930,7 +966,6 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
                 ColorCount = colorCount ?? 0,
                 TotalTiles = 0,
                 ProcessingTimeMs = 0,
-                EvaluationTime = DateTime.Now,
                 ErrorMessage = errorMessage
             };
         }

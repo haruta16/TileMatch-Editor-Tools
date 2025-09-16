@@ -1165,7 +1165,6 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
                     {
                         metrics.AddMetric("MinPeakDock", -1);
                     }
-                    metrics.AddMetric("VisitedStates", (int)Math.Min(int.MaxValue, opt.VisitedStates));
                     metrics.AddMetric("ExpandedNodes", (int)Math.Min(int.MaxValue, opt.ExpandedNodes));
                     metrics.AddMetric("SolveTimeMs", (int)Math.Min(int.MaxValue, opt.SolveTimeMs));
                 }
