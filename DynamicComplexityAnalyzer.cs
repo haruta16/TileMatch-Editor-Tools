@@ -310,6 +310,7 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
                 public int Id;
                 public int Element;
                 public int[] Deps;
+                public HashSet<int> RuntimeDependencies; // 运行时依赖，动态更新
                 public PileType PileType = PileType.Desk;
                 public bool IsDestroyed = false;
             }
@@ -333,6 +334,7 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
                         Id = t.ID,
                         Element = t.ElementValue,
                         Deps = t.Dependencies ?? System.Array.Empty<int>(),
+                        RuntimeDependencies = new HashSet<int>(t.Dependencies ?? System.Array.Empty<int>()),
                         PileType = t.PileType,
                         IsDestroyed = false
                     };
@@ -376,6 +378,8 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
                 {
                     info.PileType = PileType.Desk;
                     info.IsDestroyed = false;
+                    // 重置运行时依赖为初始依赖
+                    info.RuntimeDependencies = new HashSet<int>(info.Deps);
                 }
 
                 // 更新Dock中的瓦片
@@ -393,12 +397,24 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
                 // 标记已销毁的瓦片（不在Desk也不在Dock中的）
                 var deskIds = currentState.DeskTiles?.Select(t => t.ID).ToHashSet() ?? new HashSet<int>();
                 var dockIds = currentState.DockTiles?.Select(t => t.ID).ToHashSet() ?? new HashSet<int>();
+                var destroyedIds = new HashSet<int>();
 
                 foreach (var info in allTileInfos)
                 {
                     if (!deskIds.Contains(info.Id) && !dockIds.Contains(info.Id))
                     {
                         info.IsDestroyed = true;
+                        destroyedIds.Add(info.Id);
+                    }
+                }
+
+                // 🆕 关键修复：更新运行时依赖关系 - 移除已销毁的瓦片依赖
+                foreach (var info in allTileInfos)
+                {
+                    if (!info.IsDestroyed)
+                    {
+                        // 从运行时依赖中移除所有已销毁的瓦片ID
+                        info.RuntimeDependencies.ExceptWith(destroyedIds);
                     }
                 }
             }
@@ -428,11 +444,11 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
                 if (allElementValueTiles.Count < 3)
                     return;
 
-                // 按深度排序（模拟runtimeDependencies.Count + 1的逻辑）
+                // 按深度排序（完全匹配 runtimeDependencies.Count + 1 的逻辑）
                 allElementValueTiles.Sort((a, b) =>
                 {
-                    int depthA = a.PileType == PileType.Dock ? 0 : CalculateDepth(a) + 1;
-                    int depthB = b.PileType == PileType.Dock ? 0 : CalculateDepth(b) + 1;
+                    int depthA = a.PileType == PileType.Dock ? 0 : a.RuntimeDependencies.Count + 1;
+                    int depthB = b.PileType == PileType.Dock ? 0 : b.RuntimeDependencies.Count + 1;
                     return depthA.CompareTo(depthB);
                 });
 
@@ -471,12 +487,6 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
                 this.matchGroups[elementValue] = matchGroups;
             }
 
-            private int CalculateDepth(TileInfo tile)
-            {
-                // 简化的深度计算，基于直接依赖数量
-                return tile.Deps?.Length ?? 0;
-            }
-
             private int CalculateCost(List<TileInfo> matchTiles, out HashSet<int> path)
             {
                 var allDependencies = new HashSet<int>();
@@ -499,10 +509,10 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
 
             private void CollectAllDependencies(TileInfo tile, HashSet<int> allDependencies)
             {
-                if (tile?.Deps == null || tile.Deps.Length == 0)
+                if (tile?.RuntimeDependencies == null || tile.RuntimeDependencies.Count == 0)
                     return;
 
-                foreach (var depId in tile.Deps)
+                foreach (var depId in tile.RuntimeDependencies)
                 {
                     // 如果这个依赖ID还没有被添加过
                     if (allDependencies.Add(depId))
@@ -554,7 +564,14 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
             {
                 matchGroups?.Clear();
                 tileMap?.Clear();
-                allTileInfos?.Clear();
+                if (allTileInfos != null)
+                {
+                    foreach (var info in allTileInfos)
+                    {
+                        info.RuntimeDependencies?.Clear();
+                    }
+                    allTileInfos.Clear();
+                }
                 AnalysisTimeMs = 0;
                 TotalAnalysisCalls = 0;
                 SuccessfulMoves = 0;
