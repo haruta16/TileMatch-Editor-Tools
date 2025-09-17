@@ -325,7 +325,7 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
         /// <summary>
         /// 静态复杂度分析开关 - true启用静态分析，false禁用静态分析
         /// </summary>
-        private static readonly bool ENABLE_STATIC_ANALYSIS = true; // 默认启用静态分析
+        private static readonly bool ENABLE_STATIC_ANALYSIS = false; // 默认启用静态分析
 
         /// <summary>
         /// 动态复杂度分析开关 - true启用动态分析，false仅静态分析
@@ -759,7 +759,7 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
                 var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
                 var csvPath = Path.Combine(config.OutputDirectory, $"CsvConfig_{timestamp}.csv");
 
-                ExportDetailedToCsv(results, csvPath);
+                ExportDetailedToCsv(results, csvPath, ENABLE_STATIC_ANALYSIS, ENABLE_DYNAMIC_ANALYSIS);
 
                 Debug.Log($"结果已导出到: {config.OutputDirectory}");
                 Debug.Log($"CSV文件: {csvPath}");
@@ -774,22 +774,51 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
         }
 
         /// <summary>
-        /// CSV导出器 - 统一处理CSV格式化需求
+        /// CSV导出器 - 统一处理CSV格式化需求，支持条件性字段输出
         /// </summary>
         private static class CsvExporter
         {
-            public const string CSV_HEADER = "UniqueID,LevelName,Algorithm,ExperienceMode,PlayerType,ColorCount,TotalTiles," +
-                                             "V_Normalized,E_Normalized,A_Normalized," +
-                                             "C_Normalized,D_Normalized,G_Normalized,O_Normalized,M_Normalized," +
-                                             "TerrainScore,ColorScore,FinalScore,Grade," +
-                                             "ProcessingTimeMs,ErrorMessage," +
-                                             "DynamicAnalysisEnabled,TotalMoves,GameDurationMs,GameCompleted,CompletionStatus,DynamicAnalysisError," +
-                                             "MinPeakDock,ExpandedNodes,SolveTimeMs," +
-                                             "OptimalTileIdSequence,DockCountPerMove,PeakDockDuringSolution," +
-                                             "BattleAnalyzer_TotalMoves,BattleAnalyzer_GameDurationMs,BattleAnalyzer_CompletionStatus," +
-                                             "BattleAnalyzer_AnalysisCalls,BattleAnalyzer_AnalysisTimeMs,BattleAnalyzer_SuccessfulMoves," +
-                                             "BattleAnalyzer_TileIdSequence,BattleAnalyzer_DockCountPerMove," +
-                                             "MoveDifference,TimeDifference,WinnerByMoves,WinnerByTime,SameResult";
+            // 基础字段（始终包含）
+            private const string BASE_HEADER = "UniqueID,LevelName,Algorithm,ExperienceMode,PlayerType,ColorCount,TotalTiles";
+
+            // 静态分析字段
+            private const string STATIC_ANALYSIS_HEADER = "V_Normalized,E_Normalized,A_Normalized," +
+                                                          "C_Normalized,D_Normalized,G_Normalized,O_Normalized,M_Normalized," +
+                                                          "TerrainScore,ColorScore,FinalScore,Grade";
+
+            // 通用字段（始终包含）
+            private const string COMMON_HEADER = "ProcessingTimeMs,ErrorMessage";
+
+            // 动态分析字段
+            private const string DYNAMIC_ANALYSIS_HEADER = "DynamicAnalysisEnabled,TotalMoves,GameDurationMs,GameCompleted,CompletionStatus,DynamicAnalysisError," +
+                                                           "MinPeakDock,ExpandedNodes,SolveTimeMs," +
+                                                           "OptimalTileIdSequence,DockCountPerMove,PeakDockDuringSolution," +
+                                                           "BattleAnalyzer_TotalMoves,BattleAnalyzer_GameDurationMs,BattleAnalyzer_CompletionStatus," +
+                                                           "BattleAnalyzer_AnalysisCalls,BattleAnalyzer_AnalysisTimeMs,BattleAnalyzer_SuccessfulMoves," +
+                                                           "BattleAnalyzer_TileIdSequence,BattleAnalyzer_DockCountPerMove," +
+                                                           "MoveDifference,TimeDifference,WinnerByMoves,WinnerByTime,SameResult";
+
+            /// <summary>
+            /// 根据分析开关生成动态表头
+            /// </summary>
+            public static string GenerateHeader(bool enableStaticAnalysis, bool enableDynamicAnalysis)
+            {
+                var headerParts = new List<string> { BASE_HEADER };
+
+                if (enableStaticAnalysis)
+                {
+                    headerParts.Add(STATIC_ANALYSIS_HEADER);
+                }
+
+                headerParts.Add(COMMON_HEADER);
+
+                if (enableDynamicAnalysis)
+                {
+                    headerParts.Add(DYNAMIC_ANALYSIS_HEADER);
+                }
+
+                return string.Join(",", headerParts);
+            }
 
             /// <summary>
             /// CSV字段转义 - 内联工具方法
@@ -798,6 +827,22 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
                 string.IsNullOrEmpty(field) ? "" :
                 (field.Contains(",") || field.Contains("\"") || field.Contains("\n") || field.Contains("\r")) ?
                 "\"" + field.Replace("\"", "\"\"") + "\"" : field;
+
+            /// <summary>
+            /// 格式化静态分析字段
+            /// </summary>
+            public static string FormatStaticFields(DetailedEvaluationResult result)
+            {
+                return string.Join(",",
+                    // 8个指标值
+                    result.V_Normalized.ToString("F6"), result.E_Normalized.ToString("F6"), result.A_Normalized.ToString("F6"),
+                    result.C_Normalized.ToString("F6"), result.D_Normalized.ToString("F6"), result.G_Normalized.ToString("F6"),
+                    result.O_Normalized.ToString("F6"), result.M_Normalized.ToString("F6"),
+                    // 加权结果
+                    result.TerrainScore.ToString("F2"), result.ColorScore.ToString("F2"), result.FinalScore.ToString("F2"),
+                    result.Grade.ToString()
+                );
+            }
 
             /// <summary>
             /// 格式化动态分析字段（包含对比数据）
@@ -881,48 +926,63 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
             }
 
             /// <summary>
-            /// 格式化单行数据
+            /// 格式化单行数据，支持条件性字段输出
             /// </summary>
-            public static string FormatRow(DetailedEvaluationResult result)
+            public static string FormatRow(DetailedEvaluationResult result, bool enableStaticAnalysis, bool enableDynamicAnalysis)
             {
-                return string.Join(",",
-                    // 基础信息
+                var rowParts = new List<string>();
+
+                // 基础信息（始终包含）
+                rowParts.Add(string.Join(",",
                     result.UniqueID.ToString(),
                     Escape(result.LevelName),
                     Escape(result.Algorithm),
                     Escape(result.ExperienceMode),
                     Escape(result.PlayerType),
                     result.ColorCount.ToString(),
-                    result.TotalTiles.ToString(),
-                    // 8个指标值
-                    result.V_Normalized.ToString("F6"), result.E_Normalized.ToString("F6"), result.A_Normalized.ToString("F6"),
-                    result.C_Normalized.ToString("F6"), result.D_Normalized.ToString("F6"), result.G_Normalized.ToString("F6"),
-                    result.O_Normalized.ToString("F6"), result.M_Normalized.ToString("F6"),
-                    // 加权结果
-                    result.TerrainScore.ToString("F2"), result.ColorScore.ToString("F2"), result.FinalScore.ToString("F2"),
-                    result.Grade.ToString(),
-                    // 元数据
+                    result.TotalTiles.ToString()
+                ));
+
+                // 静态分析字段（条件性包含）
+                if (enableStaticAnalysis)
+                {
+                    rowParts.Add(FormatStaticFields(result));
+                }
+
+                // 通用字段（始终包含）
+                rowParts.Add(string.Join(",",
                     result.ProcessingTimeMs.ToString(),
-                    Escape(result.ErrorMessage ?? ""),
-                    // 动态分析
-                    FormatDynamicFields(result)
-                );
+                    Escape(result.ErrorMessage ?? "")
+                ));
+
+                // 动态分析字段（条件性包含）
+                if (enableDynamicAnalysis)
+                {
+                    rowParts.Add(FormatDynamicFields(result));
+                }
+
+                return string.Join(",", rowParts);
             }
         }
 
         /// <summary>
-        /// 导出详细评估结果为CSV格式 - 优化版
+        /// 导出详细评估结果为CSV格式 - 支持条件性字段输出
         /// </summary>
-        public static void ExportDetailedToCsv(List<DetailedEvaluationResult> results, string outputPath)
+        public static void ExportDetailedToCsv(List<DetailedEvaluationResult> results, string outputPath,
+            bool enableStaticAnalysis = true, bool enableDynamicAnalysis = true)
         {
             try
             {
                 var csv = new StringBuilder();
-                csv.AppendLine(CsvExporter.CSV_HEADER);
+
+                // 根据开关状态生成动态表头
+                string header = CsvExporter.GenerateHeader(enableStaticAnalysis, enableDynamicAnalysis);
+                csv.AppendLine(header);
 
                 foreach (var result in results)
                 {
-                    csv.AppendLine(CsvExporter.FormatRow(result));
+                    string row = CsvExporter.FormatRow(result, enableStaticAnalysis, enableDynamicAnalysis);
+                    csv.AppendLine(row);
                 }
 
                 // 确保输出目录存在并写入文件
@@ -930,6 +990,7 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
                 File.WriteAllText(outputPath, csv.ToString(), Encoding.UTF8);
 
                 Debug.Log($"详细CSV文件导出成功: {outputPath}, 包含 {results.Count} 条记录");
+                Debug.Log($"导出配置: 静态分析={enableStaticAnalysis}, 动态分析={enableDynamicAnalysis}");
             }
             catch (Exception ex)
             {
