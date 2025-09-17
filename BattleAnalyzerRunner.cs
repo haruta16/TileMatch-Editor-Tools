@@ -19,7 +19,7 @@ namespace DGuo.Client.TileMatch.Analysis
     public class BattleAnalyzerRunner
     {
         /// <summary>
-        /// CSV配置行数据
+        /// CSV配置行数据 - 统一使用BatchLevelEvaluatorSimple的数据结构
         /// </summary>
         public class CsvLevelConfig
         {
@@ -65,149 +65,345 @@ namespace DGuo.Client.TileMatch.Analysis
         }
 
         /// <summary>
-        /// 批量运行配置
+        /// 批量运行配置 - 参考BatchLevelEvaluatorSimple的配置模式
         /// </summary>
+        [System.Serializable]
         public class RunConfig
         {
-            public int TestLevelCount = 50;  // 测试关卡数量
-            public int ExperienceConfigType = 1; // 1=exp-fix-1, 2=exp-fix-2
-            public int ColorCountConfigType = 1; // 1=type-count-1, 2=type-count-2
+            [Header("=== CSV配置选择器 ===")]
+            public int ExperienceConfigEnum = -1; // 体验模式枚举：1=exp-fix-1, 2=exp-fix-2, -1=exp-range-1所有配置
+            public int ColorCountConfigEnum = -1; // 花色数量枚举：1=type-count-1, 2=type-count-2, -1=type-range-1所有配置
+
+            [Header("=== 测试参数 ===")]
+            public int TestLevelCount = 50; // 测试关卡数量
+
+            [Header("=== 随机种子配置 ===")]
+            public bool UseFixedSeed = false; // 是否使用固定种子：true=结果可重现，false=完全随机
+            public int FixedSeedValue = 12345678; // 固定种子值（当UseFixedSeed=true时使用）
+            public int RunsPerLevel = 3; // 每个关卡运行次数：1-5次，用于生成多样化数据
+
+            [Header("=== 输出配置 ===")]
             public string OutputDirectory = "BattleAnalysisResults";
+
+            /// <summary>
+            /// 获取用于测试的随机种子
+            /// </summary>
+            public int GetSeedForRun(int levelIndex, int runIndex)
+            {
+                if (UseFixedSeed)
+                {
+                    // 固定种子模式：基于关卡和运行索引生成确定性种子
+                    return FixedSeedValue + levelIndex * 1000 + runIndex;
+                }
+                else
+                {
+                    // 随机种子模式：生成完全随机的种子
+                    return UnityEngine.Random.Range(1, int.MaxValue);
+                }
+            }
+
+            /// <summary>
+            /// 获取配置描述信息
+            /// </summary>
+            public string GetConfigDescription()
+            {
+                string expMode = ExperienceConfigEnum switch
+                {
+                    1 => "ExpFix1",
+                    2 => "ExpFix2",
+                    -1 => "所有ExpRange1配置",
+                    -2 => "所有ExpRange2配置",
+                    _ => $"配置{ExperienceConfigEnum}"
+                };
+
+                string colorMode = ColorCountConfigEnum switch
+                {
+                    1 => "TypeCount1",
+                    2 => "TypeCount2",
+                    -1 => "所有TypeRange1配置",
+                    -2 => "所有TypeRange2配置",
+                    _ => $"配置{ColorCountConfigEnum}"
+                };
+
+                string seedMode = UseFixedSeed ? $"固定种子({FixedSeedValue})" : "随机种子";
+                return $"体验模式[{expMode}], 花色数量[{colorMode}], {seedMode}, 每关卡{RunsPerLevel}次";
+            }
         }
 
         private static Dictionary<int, CsvLevelConfig> _csvConfigs = null;
 
         /// <summary>
-        /// 加载CSV配置
+        /// CSV配置管理器 - 统一的配置加载和解析服务
         /// </summary>
-        private static void LoadCsvConfigs()
+        public static class CsvConfigManager
         {
-            if (_csvConfigs != null) return;
-
-            _csvConfigs = new Dictionary<int, CsvLevelConfig>();
-
-            try
+            /// <summary>
+            /// 加载CSV配置数据
+            /// </summary>
+            public static void LoadCsvConfigs()
             {
-                string csvPath = Path.Combine(Application.dataPath, "_Editor/all_level.csv");
-                if (!File.Exists(csvPath))
-                {
-                    Debug.LogError($"CSV配置文件不存在: {csvPath}");
-                    return;
-                }
+                if (_csvConfigs != null) return;
 
-                var lines = File.ReadAllLines(csvPath, Encoding.UTF8);
-                for (int i = 1; i < lines.Length; i++) // 跳过表头
-                {
-                    var parts = ParseCsvLine(lines[i]);
-                    if (parts.Length >= 7 && int.TryParse(parts[0], out int terrainId))
-                    {
-                        var config = new CsvLevelConfig
-                        {
-                            TerrainId = terrainId,
-                            ExpFix1 = ParseIntArray(parts[1]),
-                            ExpFix2 = ParseIntArray(parts[2]),
-                            ExpRange1 = ParseIntArray(parts[3]),
-                            TypeCount1 = ParseIntOrDefault(parts[4], 7),
-                            TypeCount2 = ParseIntOrDefault(parts[5], 8),
-                            TypeRange1 = ParseIntOrDefault(parts[6], 7)
-                        };
-                        _csvConfigs[terrainId] = config;
-                    }
-                }
-
-                Debug.Log($"成功加载CSV配置: {_csvConfigs.Count} 个地形");
-            }
-            catch (Exception ex)
-            {
-                Debug.LogError($"加载CSV配置失败: {ex.Message}");
                 _csvConfigs = new Dictionary<int, CsvLevelConfig>();
-            }
-        }
 
-        /// <summary>
-        /// 解析CSV行
-        /// </summary>
-        private static string[] ParseCsvLine(string line)
-        {
-            var result = new List<string>();
-            var currentField = new StringBuilder();
-            bool inQuotes = false;
-
-            for (int i = 0; i < line.Length; i++)
-            {
-                char c = line[i];
-
-                if (c == '"')
+                try
                 {
-                    inQuotes = !inQuotes;
-                }
-                else if (c == ',' && !inQuotes)
-                {
-                    result.Add(currentField.ToString());
-                    currentField.Clear();
-                }
-                else
-                {
-                    currentField.Append(c);
-                }
-            }
-
-            result.Add(currentField.ToString());
-            return result.ToArray();
-        }
-
-        /// <summary>
-        /// 解析整数数组
-        /// </summary>
-        private static int[] ParseIntArray(string arrayStr)
-        {
-            try
-            {
-                if (string.IsNullOrEmpty(arrayStr))
-                    return new int[] { 1, 2, 3 };
-
-                arrayStr = arrayStr.Trim().Trim('[', ']', '(', ')', '{', '}');
-
-                if (string.IsNullOrEmpty(arrayStr))
-                    return new int[] { 1, 2, 3 };
-
-                if (int.TryParse(arrayStr, out int singleValue))
-                {
-                    return new int[] { singleValue, singleValue, singleValue };
-                }
-
-                var parts = arrayStr.Split(new char[] { ',', ' ', ';', '\t' }, StringSplitOptions.RemoveEmptyEntries);
-                var result = new List<int>();
-
-                foreach (var part in parts)
-                {
-                    if (int.TryParse(part.Trim(), out int value))
+                    string csvPath = Path.Combine(Application.dataPath, "_Editor/all_level.csv");
+                    if (!File.Exists(csvPath))
                     {
-                        result.Add(value);
+                        Debug.LogError($"CSV配置文件不存在: {csvPath}");
+                        return;
+                    }
+
+                    var lines = File.ReadAllLines(csvPath, Encoding.UTF8);
+                    for (int i = 1; i < lines.Length; i++) // 跳过表头
+                    {
+                        var parts = CsvParser.ParseCsvLine(lines[i]);
+                        if (parts.Length >= 7 && int.TryParse(parts[0], out int terrainId))
+                        {
+                            var config = new CsvLevelConfig
+                            {
+                                TerrainId = terrainId,
+                                ExpFix1 = CsvParser.ParseIntArray(parts[1]),
+                                ExpFix2 = CsvParser.ParseIntArray(parts[2]),
+                                ExpRange1 = CsvParser.ParseIntArray(parts[3]),
+                                TypeCount1 = CsvParser.ParseIntOrDefault(parts[4], 7),
+                                TypeCount2 = CsvParser.ParseIntOrDefault(parts[5], 8),
+                                TypeRange1 = CsvParser.ParseIntOrDefault(parts[6], 7)
+                            };
+                            _csvConfigs[terrainId] = config;
+                        }
+                    }
+
+                    Debug.Log($"成功加载CSV配置: {_csvConfigs.Count} 个地形");
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogError($"加载CSV配置失败: {ex.Message}");
+                    _csvConfigs = new Dictionary<int, CsvLevelConfig>();
+                }
+            }
+
+            /// <summary>
+            /// 根据枚举配置解析体验模式数组 - 支持-1全配置模式
+            /// </summary>
+            public static int[][] ResolveExperienceModes(int experienceConfigEnum, int terrainId)
+            {
+                LoadCsvConfigs();
+
+                switch (experienceConfigEnum)
+                {
+                    case 1:
+                    case 2:
+                        // 固定配置：使用特定地形的配置
+                        if (!_csvConfigs.TryGetValue(terrainId, out var config))
+                        {
+                            Debug.LogWarning($"未找到地形ID {terrainId} 的配置，使用默认值");
+                            return new int[][] { new int[] { 1, 2, 3 } };
+                        }
+
+                        var selectedMode = experienceConfigEnum == 1 ? config.ExpFix1 : config.ExpFix2;
+                        return new int[][] { selectedMode };
+
+                    case -1:
+                        // 所有ExpRange1配置：返回全局去重后的所有配置
+                        return GetAllExpRange1Configurations();
+
+                    case -2:
+                        // 所有ExpRange2配置：暂未定义，返回所有ExpRange1
+                        return GetAllExpRange1Configurations();
+
+                    default:
+                        Debug.LogWarning($"不支持的体验配置枚举: {experienceConfigEnum}，使用默认值");
+                        return new int[][] { new int[] { 1, 2, 3 } };
+                }
+            }
+
+            /// <summary>
+            /// 根据枚举配置解析花色数量数组 - 支持-1全配置模式
+            /// </summary>
+            public static int[] ResolveColorCounts(int colorCountConfigEnum, int terrainId)
+            {
+                LoadCsvConfigs();
+
+                switch (colorCountConfigEnum)
+                {
+                    case 1:
+                    case 2:
+                        // 固定配置：使用特定地形的配置
+                        if (!_csvConfigs.TryGetValue(terrainId, out var config))
+                        {
+                            Debug.LogWarning($"未找到地形ID {terrainId} 的配置，使用默认值");
+                            return new int[] { 7 };
+                        }
+
+                        var selectedCount = colorCountConfigEnum == 1 ? config.TypeCount1 : config.TypeCount2;
+                        return new int[] { selectedCount };
+
+                    case -1:
+                        // 所有TypeRange1配置：返回全局去重后的所有配置
+                        return GetAllTypeRange1Configurations();
+
+                    case -2:
+                        // 所有TypeRange2配置：暂未定义，返回所有TypeRange1
+                        return GetAllTypeRange1Configurations();
+
+                    default:
+                        Debug.LogWarning($"不支持的花色配置枚举: {colorCountConfigEnum}，使用默认值");
+                        return new int[] { 7 };
+                }
+            }
+
+            /// <summary>
+            /// 获取exp-range-1列中所有不重复的体验配置
+            /// </summary>
+            private static int[][] GetAllExpRange1Configurations()
+            {
+                LoadCsvConfigs();
+
+                var uniqueConfigs = new HashSet<string>();
+                var results = new List<int[]>();
+
+                foreach (var row in _csvConfigs.Values)
+                {
+                    string configStr = string.Join(",", row.ExpRange1);
+                    if (uniqueConfigs.Add(configStr))
+                    {
+                        results.Add(row.ExpRange1);
                     }
                 }
 
-                if (result.Count == 0)
-                    return new int[] { 1, 2, 3 };
-                else if (result.Count == 1)
-                    return new int[] { result[0], result[0], result[0] };
-                else if (result.Count == 2)
-                    return new int[] { result[0], result[1], result[1] };
-                else
-                    return result.Take(3).ToArray();
+                Debug.Log($"获取到 {results.Count} 个不重复的ExpRange1配置");
+                return results.ToArray();
             }
-            catch
+
+            /// <summary>
+            /// 获取type-range-1列中所有不重复的花色数量
+            /// </summary>
+            private static int[] GetAllTypeRange1Configurations()
             {
-                return new int[] { 1, 2, 3 };
+                LoadCsvConfigs();
+
+                var results = _csvConfigs.Values
+                    .Select(row => row.TypeRange1)
+                    .Where(count => count > 0)
+                    .Distinct()
+                    .OrderBy(x => x)
+                    .ToArray();
+
+                Debug.Log($"获取到 {results.Length} 个不重复的TypeRange1配置: [{string.Join(",", results)}]");
+                return results;
+            }
+
+            /// <summary>
+            /// 兼容方法：获取单个体验模式（仅用于向后兼容）
+            /// </summary>
+            public static int[] ResolveExperienceMode(int experienceConfigEnum, int terrainId)
+            {
+                var modes = ResolveExperienceModes(experienceConfigEnum, terrainId);
+                return modes.Length > 0 ? modes[0] : new int[] { 1, 2, 3 };
+            }
+
+            /// <summary>
+            /// 兼容方法：获取单个花色数量（仅用于向后兼容）
+            /// </summary>
+            public static int ResolveColorCount(int colorCountConfigEnum, int terrainId)
+            {
+                var counts = ResolveColorCounts(colorCountConfigEnum, terrainId);
+                return counts.Length > 0 ? counts[0] : 7;
             }
         }
 
         /// <summary>
-        /// 解析整数或返回默认值
+        /// CSV解析工具类 - 提取通用解析逻辑
         /// </summary>
-        private static int ParseIntOrDefault(string str, int defaultValue)
+        public static class CsvParser
         {
-            return int.TryParse(str.Trim(), out int result) ? result : defaultValue;
+            /// <summary>
+            /// 解析CSV行，处理引号包围的字段
+            /// </summary>
+            public static string[] ParseCsvLine(string line)
+            {
+                var result = new List<string>();
+                var currentField = new StringBuilder();
+                bool inQuotes = false;
+
+                for (int i = 0; i < line.Length; i++)
+                {
+                    char c = line[i];
+
+                    if (c == '"')
+                    {
+                        inQuotes = !inQuotes;
+                    }
+                    else if (c == ',' && !inQuotes)
+                    {
+                        result.Add(currentField.ToString());
+                        currentField.Clear();
+                    }
+                    else
+                    {
+                        currentField.Append(c);
+                    }
+                }
+
+                result.Add(currentField.ToString());
+                return result.ToArray();
+            }
+
+            /// <summary>
+            /// 解析整数数组字符串，支持多种格式
+            /// </summary>
+            public static int[] ParseIntArray(string arrayStr)
+            {
+                try
+                {
+                    if (string.IsNullOrEmpty(arrayStr))
+                        return new int[] { 1, 2, 3 };
+
+                    arrayStr = arrayStr.Trim().Trim('[', ']', '(', ')', '{', '}');
+
+                    if (string.IsNullOrEmpty(arrayStr))
+                        return new int[] { 1, 2, 3 };
+
+                    if (int.TryParse(arrayStr, out int singleValue))
+                    {
+                        return new int[] { singleValue, singleValue, singleValue };
+                    }
+
+                    var parts = arrayStr.Split(new char[] { ',', ' ', ';', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+                    var result = new List<int>();
+
+                    foreach (var part in parts)
+                    {
+                        if (int.TryParse(part.Trim(), out int value))
+                        {
+                            result.Add(value);
+                        }
+                    }
+
+                    if (result.Count == 0)
+                        return new int[] { 1, 2, 3 };
+                    else if (result.Count == 1)
+                        return new int[] { result[0], result[0], result[0] };
+                    else if (result.Count == 2)
+                        return new int[] { result[0], result[1], result[1] };
+                    else
+                        return result.Take(3).ToArray();
+                }
+                catch
+                {
+                    return new int[] { 1, 2, 3 };
+                }
+            }
+
+            /// <summary>
+            /// 解析整数或返回默认值
+            /// </summary>
+            public static int ParseIntOrDefault(string str, int defaultValue)
+            {
+                return int.TryParse(str.Trim(), out int result) ? result : defaultValue;
+            }
         }
 
         /// <summary>
@@ -767,45 +963,71 @@ namespace DGuo.Client.TileMatch.Analysis
         }
 
         /// <summary>
-        /// 批量运行分析
+        /// 批量运行分析 - 支持-1枚举值的多配置组合
         /// </summary>
         public static List<AnalysisResult> RunBatchAnalysis(RunConfig config)
         {
-            LoadCsvConfigs();
-
+            CsvConfigManager.LoadCsvConfigs();
             var results = new List<AnalysisResult>();
 
-            // 暂时注释固定种子，使用随机种子
-            // UnityEngine.Random.InitState(12345678);
+            // 应用种子配置
+            if (config.UseFixedSeed)
+            {
+                UnityEngine.Random.InitState(config.FixedSeedValue);
+                Debug.Log($"使用固定随机种子: {config.FixedSeedValue} (确保结果可重现)");
+            }
+            else
+            {
+                Debug.Log("使用随机种子模式 (每次结果不同)");
+            }
+
+            Debug.Log($"开始批量分析: {config.GetConfigDescription()}");
+
+            // 预计算总任务数
+            int totalTasks = 0;
+            var levelConfigs = new Dictionary<string, (int[][] experienceModes, int[] colorCounts)>();
 
             for (int i = 1; i <= config.TestLevelCount; i++)
             {
                 string levelName = $"Level_{i:D3}";
+                var experienceModes = CsvConfigManager.ResolveExperienceModes(config.ExperienceConfigEnum, i);
+                var colorCounts = CsvConfigManager.ResolveColorCounts(config.ColorCountConfigEnum, i);
+                levelConfigs[levelName] = (experienceModes, colorCounts);
+                totalTasks += experienceModes.Length * colorCounts.Length * config.RunsPerLevel;
+            }
 
-                if (!_csvConfigs.TryGetValue(i, out var csvConfig))
+            Debug.Log($"关卡数量: {config.TestLevelCount}, 总任务数: {totalTasks}");
+
+            int completedTasks = 0;
+
+            foreach (var kvp in levelConfigs)
+            {
+                string levelName = kvp.Key;
+                var (experienceModes, colorCounts) = kvp.Value;
+                int terrainId = int.Parse(levelName.Substring(6)); // 提取Level_001中的001
+
+                foreach (var experienceMode in experienceModes)
                 {
-                    Debug.LogWarning($"未找到地形ID {i} 的配置，跳过");
-                    continue;
-                }
+                    foreach (var colorCount in colorCounts)
+                    {
+                        // 根据配置生成多次运行
+                        for (int runIndex = 0; runIndex < config.RunsPerLevel; runIndex++)
+                        {
+                            int randomSeed = config.GetSeedForRun(terrainId, runIndex);
 
-                // 根据配置类型选择体验模式和花色数量
-                int[] experienceMode = config.ExperienceConfigType == 1 ? csvConfig.ExpFix1 : csvConfig.ExpFix2;
-                int colorCount = config.ColorCountConfigType == 1 ? csvConfig.TypeCount1 : csvConfig.TypeCount2;
+                            completedTasks++;
+                            Debug.Log($"[{completedTasks}/{totalTasks}] 分析关卡 {levelName}: " +
+                                     $"体验[{string.Join(",", experienceMode)}], 花色{colorCount}, 种子{randomSeed}");
 
-                // 为每个关卡生成3次不同的随机配置
-                for (int runIndex = 0; runIndex < 3; runIndex++)
-                {
-                    // 生成随机种子
-                    int randomSeed = UnityEngine.Random.Range(1, int.MaxValue);
-
-                    Debug.Log($"正在分析关卡 {levelName} (第{runIndex + 1}次), 体验模式: [{string.Join(",", experienceMode)}], 花色数量: {colorCount}, 随机种子: {randomSeed}");
-
-                    var result = RunSingleLevelAnalysis(levelName, experienceMode, colorCount, randomSeed);
-                    result.TerrainId = i;
-                    results.Add(result);
+                            var result = RunSingleLevelAnalysis(levelName, experienceMode, colorCount, randomSeed);
+                            result.TerrainId = terrainId;
+                            results.Add(result);
+                        }
+                    }
                 }
             }
 
+            Debug.Log($"批量分析完成: {results.Count} 个任务结果");
             return results;
         }
 
@@ -853,61 +1075,33 @@ namespace DGuo.Client.TileMatch.Analysis
 
 #if UNITY_EDITOR
         /// <summary>
-        /// Unity Editor菜单：运行BattleAnalyzer批量分析
+        /// Unity Editor菜单：运行BattleAnalyzer批量分析（使用默认配置）
         /// </summary>
         [MenuItem("TileMatch/BattleAnalyzer/运行批量分析")]
         public static void RunBatchAnalysisFromMenu()
         {
-            var config = new RunConfig
-            {
-                TestLevelCount = 50,
-                ExperienceConfigType = 1,
-                ColorCountConfigType = 1,
-                OutputDirectory = Path.Combine(Application.dataPath, "_Editor/BattleAnalysisResults")
-            };
+            var config = new RunConfig(); // 使用完全默认的配置
+            config.OutputDirectory = Path.Combine(Application.dataPath, "_Editor/BattleAnalysisResults");
 
-            Debug.Log($"开始批量BattleAnalyzer分析，关卡数量: {config.TestLevelCount}");
+            Debug.Log($"=== 开始批量分析（默认配置） ===");
+            Debug.Log($"配置详情: {config.GetConfigDescription()}");
+            Debug.Log($"关卡数量: {config.TestLevelCount}");
 
             var results = RunBatchAnalysis(config);
 
             var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
-            var csvPath = Path.Combine(config.OutputDirectory, $"BattleAnalysis_{timestamp}.csv");
+            string seedSuffix = config.UseFixedSeed ? $"_Fixed{config.FixedSeedValue}" : "_Random";
+            var csvPath = Path.Combine(config.OutputDirectory, $"BattleAnalysis{seedSuffix}_{timestamp}.csv");
 
             ExportToCsv(results, csvPath);
 
-            Debug.Log($"批量分析完成! 成功分析 {results.Count} 个关卡");
+            Debug.Log($"批量分析完成! 成功分析 {results.Count} 个任务");
             Debug.Log($"结果已保存到: {csvPath}");
 
             // 打开输出文件夹
             if (Directory.Exists(config.OutputDirectory))
             {
                 System.Diagnostics.Process.Start("explorer.exe", config.OutputDirectory.Replace('/', '\\'));
-            }
-        }
-
-        /// <summary>
-        /// Unity Editor菜单：测试单个关卡分析
-        /// </summary>
-        [MenuItem("TileMatch/BattleAnalyzer/测试单个关卡")]
-        public static void TestSingleLevel()
-        {
-            // 生成随机种子进行测试
-            int randomSeed = UnityEngine.Random.Range(1, int.MaxValue);
-            var result = RunSingleLevelAnalysis("Level_001", new int[] { 1, 2, 3 }, 7, randomSeed);
-
-            Debug.Log($"单关卡测试结果:");
-            Debug.Log($"关卡: {result.LevelName}");
-            Debug.Log($"随机种子: {result.RandomSeed}");
-            Debug.Log($"游戏完成: {result.GameCompleted}");
-            Debug.Log($"总移动数: {result.TotalMoves}");
-            Debug.Log($"游戏时长: {result.GameDurationMs}ms");
-            Debug.Log($"分析调用次数: {result.TotalAnalysisCalls}");
-            Debug.Log($"成功消除次数: {result.SuccessfulMoves}");
-            Debug.Log($"峰值Dock数量: {result.PeakDockCount}");
-
-            if (!string.IsNullOrEmpty(result.ErrorMessage))
-            {
-                Debug.LogError($"错误: {result.ErrorMessage}");
             }
         }
 #endif
