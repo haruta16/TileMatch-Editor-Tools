@@ -42,6 +42,7 @@ namespace DGuo.Client.TileMatch.Analysis
             public int[] ExperienceMode { get; set; }
             public int ColorCount { get; set; }
             public int TotalTiles { get; set; }
+            public int RandomSeed { get; set; } // 新增随机种子字段
 
             // 游戏执行结果
             public bool GameCompleted { get; set; }
@@ -212,13 +213,23 @@ namespace DGuo.Client.TileMatch.Analysis
         /// <summary>
         /// 运行单个关卡分析
         /// </summary>
-        public static AnalysisResult RunSingleLevelAnalysis(string levelName, int[] experienceMode, int colorCount)
+        public static AnalysisResult RunSingleLevelAnalysis(string levelName, int[] experienceMode, int colorCount, int randomSeed = -1)
         {
+            // 如果没有指定种子，生成随机种子
+            if (randomSeed == -1)
+            {
+                randomSeed = UnityEngine.Random.Range(1, int.MaxValue);
+            }
+
+            // 设置随机种子
+            UnityEngine.Random.InitState(randomSeed);
+
             var result = new AnalysisResult
             {
                 LevelName = levelName,
                 ExperienceMode = experienceMode,
-                ColorCount = colorCount
+                ColorCount = colorCount,
+                RandomSeed = randomSeed
             };
 
             var stopwatch = System.Diagnostics.Stopwatch.StartNew();
@@ -764,8 +775,8 @@ namespace DGuo.Client.TileMatch.Analysis
 
             var results = new List<AnalysisResult>();
 
-            // 设置随机种子确保可重现
-            UnityEngine.Random.InitState(12345678);
+            // 暂时注释固定种子，使用随机种子
+            // UnityEngine.Random.InitState(12345678);
 
             for (int i = 1; i <= config.TestLevelCount; i++)
             {
@@ -781,11 +792,18 @@ namespace DGuo.Client.TileMatch.Analysis
                 int[] experienceMode = config.ExperienceConfigType == 1 ? csvConfig.ExpFix1 : csvConfig.ExpFix2;
                 int colorCount = config.ColorCountConfigType == 1 ? csvConfig.TypeCount1 : csvConfig.TypeCount2;
 
-                Debug.Log($"正在分析关卡 {levelName}, 体验模式: [{string.Join(",", experienceMode)}], 花色数量: {colorCount}");
+                // 为每个关卡生成3次不同的随机配置
+                for (int runIndex = 0; runIndex < 3; runIndex++)
+                {
+                    // 生成随机种子
+                    int randomSeed = UnityEngine.Random.Range(1, int.MaxValue);
 
-                var result = RunSingleLevelAnalysis(levelName, experienceMode, colorCount);
-                result.TerrainId = i;
-                results.Add(result);
+                    Debug.Log($"正在分析关卡 {levelName} (第{runIndex + 1}次), 体验模式: [{string.Join(",", experienceMode)}], 花色数量: {colorCount}, 随机种子: {randomSeed}");
+
+                    var result = RunSingleLevelAnalysis(levelName, experienceMode, colorCount, randomSeed);
+                    result.TerrainId = i;
+                    results.Add(result);
+                }
             }
 
             return results;
@@ -800,8 +818,8 @@ namespace DGuo.Client.TileMatch.Analysis
             {
                 var csv = new StringBuilder();
 
-                // CSV表头
-                csv.AppendLine("TerrainId,LevelName,ExperienceMode,ColorCount,TotalTiles," +
+                // CSV表头 - 添加RandomSeed字段
+                csv.AppendLine("TerrainId,LevelName,ExperienceMode,ColorCount,TotalTiles,RandomSeed," +
                               "GameCompleted,TotalMoves,GameDurationMs,CompletionStatus," +
                               "TotalAnalysisCalls,TotalAnalysisTimeMs,SuccessfulMoves," +
                               "TileIdSequence,DockCountPerMove,PeakDockCount,MinMovesToComplete,ErrorMessage");
@@ -809,10 +827,10 @@ namespace DGuo.Client.TileMatch.Analysis
                 foreach (var result in results)
                 {
                     string expMode = $"[{string.Join(",", result.ExperienceMode)}]";
-                    string tileSequence = result.TileIdSequence.Count > 0 ? string.Join(";", result.TileIdSequence) : "";
-                    string dockCounts = result.DockCountPerMove.Count > 0 ? string.Join(";", result.DockCountPerMove) : "";
+                    string tileSequence = result.TileIdSequence.Count > 0 ? string.Join(",", result.TileIdSequence) : "";
+                    string dockCounts = result.DockCountPerMove.Count > 0 ? string.Join(",", result.DockCountPerMove) : "";
 
-                    csv.AppendLine($"{result.TerrainId},{result.LevelName},\"{expMode}\",{result.ColorCount},{result.TotalTiles}," +
+                    csv.AppendLine($"{result.TerrainId},{result.LevelName},\"{expMode}\",{result.ColorCount},{result.TotalTiles},{result.RandomSeed}," +
                                   $"{result.GameCompleted},{result.TotalMoves},{result.GameDurationMs},\"{result.CompletionStatus}\"," +
                                   $"{result.TotalAnalysisCalls},{result.TotalAnalysisTimeMs},{result.SuccessfulMoves}," +
                                   $"\"{tileSequence}\",\"{dockCounts}\",{result.PeakDockCount},{result.MinMovesToComplete},\"{result.ErrorMessage ?? ""}\"");
@@ -873,10 +891,13 @@ namespace DGuo.Client.TileMatch.Analysis
         [MenuItem("TileMatch/BattleAnalyzer/测试单个关卡")]
         public static void TestSingleLevel()
         {
-            var result = RunSingleLevelAnalysis("Level_001", new int[] { 1, 2, 3 }, 7);
+            // 生成随机种子进行测试
+            int randomSeed = UnityEngine.Random.Range(1, int.MaxValue);
+            var result = RunSingleLevelAnalysis("Level_001", new int[] { 1, 2, 3 }, 7, randomSeed);
 
             Debug.Log($"单关卡测试结果:");
             Debug.Log($"关卡: {result.LevelName}");
+            Debug.Log($"随机种子: {result.RandomSeed}");
             Debug.Log($"游戏完成: {result.GameCompleted}");
             Debug.Log($"总移动数: {result.TotalMoves}");
             Debug.Log($"游戏时长: {result.GameDurationMs}ms");
