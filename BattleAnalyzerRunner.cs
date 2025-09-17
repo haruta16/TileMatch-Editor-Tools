@@ -521,8 +521,8 @@ namespace DGuo.Client.TileMatch.Analysis
                 // 按深度排序（runtimeDependencies + 1，Dock区域的Tile深度为0）
                 allElementValueTiles.Sort((a, b) =>
                 {
-                    int depthA = a.PileType == PileType.Dock ? 0 : (a.runtimeDependencies?.Count ?? 0) + 1;
-                    int depthB = b.PileType == PileType.Dock ? 0 : (b.runtimeDependencies?.Count ?? 0) + 1;
+                    int depthA = a.PileType == PileType.Dock ? 0 : a.runtimeDependencies.Count + 1;
+                    int depthB = b.PileType == PileType.Dock ? 0 : b.runtimeDependencies.Count + 1;
                     return depthA.CompareTo(depthB);
                 });
 
@@ -568,6 +568,7 @@ namespace DGuo.Client.TileMatch.Analysis
             private int CalculateCost(List<Tile> matchTiles, out HashSet<int> path)
             {
                 HashSet<int> allDependencies = new HashSet<int>();
+                int totalCost = 0;
 
                 foreach (var tile in matchTiles)
                 {
@@ -579,8 +580,9 @@ namespace DGuo.Client.TileMatch.Analysis
                     allDependencies.Add(tile.ID);
                 }
 
+                totalCost += allDependencies.Count;
                 path = allDependencies;
-                return allDependencies.Count;
+                return totalCost;
             }
 
             /// <summary>
