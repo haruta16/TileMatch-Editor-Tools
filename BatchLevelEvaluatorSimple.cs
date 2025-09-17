@@ -29,22 +29,64 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
     }
 
     /// <summary>
-    /// 简化的批量评估配置管理器
+    /// 精简化算法配置管理器
     /// </summary>
     [System.Serializable]
-    public class SimplifiedBatchConfiguration
+    public class AlgorithmConfiguration
     {
+        [Header("=== 算法执行策略 ===")]
+
+        /// <summary>
+        /// 算法执行策略：决定如何运行算法列表中的算法
+        /// • Single：只运行AlgorithmList中的第一个算法
+        /// • Parallel：同时运行所有算法，生成对比数据
+        /// • Fallback：按顺序依次尝试，第一个成功就停止
+        /// • Best：运行所有算法，选择性能最优的结果
+        /// 📝 修改这里可以改变算法执行方式
+        /// </summary>
+        public DynamicComplexityAnalyzer.AlgorithmStrategy Strategy = DynamicComplexityAnalyzer.AlgorithmStrategy.Parallel;
+
+        /// <summary>
+        /// 算法优先级列表：按数组顺序执行的算法列表
+        /// 可选算法类型：
+        /// • OptimalDFS：原有的最优DFS算法（较慢但精确）
+        /// • BattleAnalyzer：TileMatchBattleAnalyzerMgr算法（较快）
+        /// • DefaultGreedy：简单贪心算法（最快但不一定最优）
+        /// 📝 修改这里可以改变算法类型和优先级顺序
+        /// 示例：{ BattleAnalyzer, OptimalDFS } = 优先BattleAnalyzer，失败时用OptimalDFS
+        /// </summary>
+        public DynamicComplexityAnalyzer.AlgorithmType[] AlgorithmList = { DynamicComplexityAnalyzer.AlgorithmType.OptimalDFS, DynamicComplexityAnalyzer.AlgorithmType.BattleAnalyzer };
+
+        [Header("=== 容错设置 ===")]
+
+        /// <summary>
+        /// 启用重试机制：当算法执行失败时是否自动重试
+        /// • true：启用重试，失败时会重新尝试执行
+        /// • false：禁用重试，失败时直接报错
+        /// 📝 建议保持true，提高算法执行的稳定性
+        /// </summary>
+        public bool EnableRetry = true;
+
+        /// <summary>
+        /// 最大重试次数：每个算法最多重试几次
+        /// • 0：不重试，失败就停止
+        /// • 1-5：重试1-5次，推荐2-3次
+        /// • 过高的重试次数可能导致测试时间过长
+        /// 📝 修改这里可以调整容错强度
+        /// </summary>
+        public int MaxRetryCount = 2;
+
         [Header("=== CSV配置选择器 ===")]
         public int ExperienceConfigEnum = 1; // 体验模式枚举：1=exp-fix-1, 2=exp-fix-2, -1=exp-range-1所有, -2=exp-range-2所有
         public int ColorCountConfigEnum = 1; // 花色数量枚举：1=type-count-1, 2=type-count-2, -1=type-range-1所有, -2=type-range-2所有
-        
+
         [Header("=== 测试参数 ===")]
         public int TestLevelCount = 15; // 测试关卡数量 - 修改这个数字选择测试多少个关卡
-        
+
         [Header("=== 通用配置 ===")]
         public string[] PlayerTypesToEvaluate = { "Normal" };
         public string OutputDirectory = "DetailedResults";
-        
+
     }
 
     /// <summary>
@@ -335,10 +377,11 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
         /// <summary>
         /// 获取当前选择的配置
         /// </summary>
-        public static SimplifiedBatchConfiguration GetSelectedConfig()
+        public static AlgorithmConfiguration GetSelectedConfig()
         {
-            // 使用SimplifiedBatchConfiguration的默认实例配置
-            return new SimplifiedBatchConfiguration();
+            // 使用AlgorithmConfiguration的默认实例配置
+            // 🔧 如需修改【运行当前CSV配置】的算法，请修改下面的return语句
+            return new AlgorithmConfiguration();
         }
         
         /// <summary>
@@ -432,13 +475,20 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
         /// <param name="playerType">玩家类型</param>
         /// <param name="colorCount">花色数量 (可选，默认使用关卡配置)</param>
         /// <param name="uniqueID">唯一配置ID</param>
+        /// <param name="algorithmConfig">算法配置 (可选，默认使用单一OptimalDFS算法)</param>
         /// <returns>真实评估结果</returns>
-        public static DetailedEvaluationResult EvaluateRealLevel(string levelName, int[] experienceMode, string playerType, int? colorCount = null, int uniqueID = 0)
+        public static DetailedEvaluationResult EvaluateRealLevel(string levelName, int[] experienceMode, string playerType, int? colorCount = null, int uniqueID = 0, AlgorithmConfiguration algorithmConfig = null)
         {
             var stopwatch = System.Diagnostics.Stopwatch.StartNew();
 
             try
             {
+                // 使用默认算法配置（如果未提供）
+                if (algorithmConfig == null)
+                {
+                    algorithmConfig = new AlgorithmConfiguration();
+                }
+
                 // 注意：随机种子已在批量评估开始时统一设置，此处无需重复设置
                 
                 // 第一步: 加载真实关卡数据
@@ -479,7 +529,8 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
                     }
                 }
 
-                // 第五步: 动态复杂度分析 - 对比两种算法 (可选)
+                // 第五步: 统一算法执行 - 使用新的AlgorithmExecutor
+                DynamicComplexityAnalyzer.ExecutionResult algorithmResult = null;
                 DynamicComplexityAnalyzer.DynamicComplexityMetrics dynamicMetrics = null;
                 DynamicComplexityAnalyzer.AlgorithmComparisonResult comparisonResult = null;
                 string dynamicError = null;
@@ -499,50 +550,67 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
                         tempAlgorithm.AssignTileTypes(tiles, experienceMode, tempColors);
                         terrainAnalysis = tempAlgorithm.LastTerrainAnalysis;
 
-                        // 运行算法对比测试 - 同时运行两种算法
-                        comparisonResult = DynamicComplexityAnalyzer.CompareAlgorithms(
+                        // 使用新的统一算法执行器
+                        algorithmResult = DynamicComplexityAnalyzer.AlgorithmExecutor.Execute(
+                            algorithmConfig.Strategy,
+                            algorithmConfig.AlgorithmList,
                             tiles,
                             experienceMode,
                             terrainAnalysis,
-                            DynamicComplexityAnalyzer.AlgorithmType.OptimalDFS,
-                            DynamicComplexityAnalyzer.AlgorithmType.BattleAnalyzer
+                            algorithmConfig.EnableRetry,
+                            algorithmConfig.MaxRetryCount
                         );
 
-                        // 使用OptimalDFS的结果作为主要动态指标（向后兼容）
-                        dynamicMetrics = comparisonResult.Algorithm1Metrics;
-
-                        // 详细输出对比结果
-                        if (!string.IsNullOrEmpty(comparisonResult.ErrorMessage))
+                        if (algorithmResult.Success)
                         {
-                            Debug.LogWarning($"算法对比部分失败 {levelName}: {comparisonResult.ErrorMessage}");
+                            // 根据执行策略处理结果
+                            if (algorithmConfig.Strategy == DynamicComplexityAnalyzer.AlgorithmStrategy.Parallel && algorithmResult.Results.Count >= 2)
+                            {
+                                // 对于并行模式，创建兼容的对比结果
+                                var successResults = algorithmResult.Results.Where(r => r.Success).ToList();
+                                if (successResults.Count >= 2)
+                                {
+                                    comparisonResult = CreateComparisonResultFromExecutionResult(algorithmResult);
+                                    dynamicMetrics = successResults[0].Metrics; // 使用第一个成功的结果作为主要指标
+                                }
+                                else if (successResults.Count == 1)
+                                {
+                                    dynamicMetrics = successResults[0].Metrics;
+                                }
+                            }
+                            else
+                            {
+                                // 对于单一、回退或最优模式，使用最佳结果
+                                var bestResult = algorithmResult.BestResult;
+                                if (bestResult != null)
+                                {
+                                    dynamicMetrics = bestResult.Metrics;
+                                    actualAlgorithmName = $"{actualAlgorithmName}-{bestResult.Name}"; // 更新实际使用的算法名称
+                                }
+                            }
+
+                            // 输出算法执行结果
+                            Debug.Log($"=== 算法执行结果 {levelName} ===");
+                            Debug.Log($"执行策略: {algorithmConfig.Strategy}");
+                            Debug.Log($"成功算法数: {algorithmResult.Results.Count(r => r.Success)}/{algorithmResult.Results.Count}");
+
+                            foreach (var result in algorithmResult.Results.Where(r => r.Success))
+                            {
+                                Debug.Log($"{result.Name}: {result.Metrics?.CompletionStatus}, 移动{result.Metrics?.TotalMoves}步, 耗时{result.Metrics?.GameDurationMs}ms");
+                            }
+
+                            // 如果是并行模式且有对比结果，输出对比信息
+                            if (comparisonResult != null && string.IsNullOrEmpty(comparisonResult.ErrorMessage))
+                            {
+                                Debug.Log($"移动步数差异: {comparisonResult.MoveDifference} (优胜者: {comparisonResult.WinnerByMoves})");
+                                Debug.Log($"执行时间差异: {comparisonResult.TimeDifference}ms (优胜者: {comparisonResult.WinnerByTime})");
+                                Debug.Log($"结果一致性: {comparisonResult.SameResult}");
+                            }
                         }
                         else
                         {
-                            var opt = comparisonResult.Algorithm1Metrics;
-                            var battle = comparisonResult.Algorithm2Metrics;
-
-                            Debug.Log($"=== 算法性能对比 {levelName} ===");
-                            Debug.Log($"OptimalDFS算法: {opt?.CompletionStatus}, 移动{opt?.TotalMoves}步, 耗时{opt?.GameDurationMs}ms");
-                            Debug.Log($"BattleAnalyzer算法: {battle?.CompletionStatus}, 移动{battle?.TotalMoves}步, 耗时{battle?.GameDurationMs}ms");
-                            Debug.Log($"移动步数差异: {comparisonResult.MoveDifference} (优胜者: {comparisonResult.WinnerByMoves})");
-                            Debug.Log($"执行时间差异: {comparisonResult.TimeDifference}ms (优胜者: {comparisonResult.WinnerByTime})");
-                            Debug.Log($"结果一致性: {comparisonResult.SameResult}");
-
-                            // 输出更详细的统计信息
-                            if (opt != null)
-                            {
-                                var minPeak = opt.GetMetric<int>("MinPeakDock", -1);
-                                var expandedNodes = opt.GetMetric<int>("ExpandedNodes", 0);
-                                Debug.Log($"OptimalDFS详细: MinPeakDock={minPeak}, 扩展节点={expandedNodes}");
-                            }
-
-                            if (battle != null)
-                            {
-                                var analysisCalls = battle.GetMetric<int>("TotalAnalysisCalls", 0);
-                                var analysisTime = battle.GetMetric<int>("AnalysisTimeMs", 0);
-                                var successMoves = battle.GetMetric<int>("SuccessfulMoves", 0);
-                                Debug.Log($"BattleAnalyzer详细: 分析调用={analysisCalls}次, 分析耗时={analysisTime}ms, 成功移动={successMoves}次");
-                            }
+                            dynamicError = algorithmResult.ErrorMessage;
+                            Debug.LogWarning($"算法执行失败 {levelName}: {algorithmResult.ErrorMessage}");
                         }
                     }
                     catch (Exception dynamicEx)
@@ -642,10 +710,10 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
         /// <returns>详细评估结果列表</returns>
         public static List<DetailedEvaluationResult> EvaluateLevelsSimplified(
             List<string> levelNames,
-            SimplifiedBatchConfiguration config = null,
+            AlgorithmConfiguration config = null,
             Action<BatchProgress> progressCallback = null)
         {
-            if (config == null) config = new SimplifiedBatchConfiguration();
+            if (config == null) config = new AlgorithmConfiguration();
 
             // 设置固定随机种子确保批量评估结果可重现
             UnityEngine.Random.InitState(FIXED_RANDOM_SEED);
@@ -684,7 +752,7 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
                         foreach (var colorCount in colorCounts)
                         {
                             // 执行评估
-                            var result = EvaluateRealLevel(levelName, experienceMode, playerType, colorCount, currentUniqueID);
+                            var result = EvaluateRealLevel(levelName, experienceMode, playerType, colorCount, currentUniqueID, config);
                             results.Add(result);
                             currentUniqueID++;
                             completedTasks++;
@@ -725,9 +793,58 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
         }
 
         /// <summary>
+        /// 快速切换为单一BattleAnalyzer算法
+        /// </summary>
+        [UnityEditor.MenuItem("TileMatch/快速切换/🚀 单一BattleAnalyzer")]
+        public static void QuickSwitchToBattleAnalyzer()
+        {
+            // 临时修改GetSelectedConfig方法的实现不太优雅，直接创建配置
+            var config = new AlgorithmConfiguration
+            {
+                Strategy = DynamicComplexityAnalyzer.AlgorithmStrategy.Single,
+                AlgorithmList = new[] { DynamicComplexityAnalyzer.AlgorithmType.BattleAnalyzer },
+                TestLevelCount = 15
+            };
+
+            ExecuteSimplifiedTest(config, "快速切换-单一BattleAnalyzer", 15);
+        }
+
+        /// <summary>
+        /// 快速切换为单一OptimalDFS算法
+        /// </summary>
+        [UnityEditor.MenuItem("TileMatch/快速切换/⚡ 单一OptimalDFS")]
+        public static void QuickSwitchToOptimalDFS()
+        {
+            var config = new AlgorithmConfiguration
+            {
+                Strategy = DynamicComplexityAnalyzer.AlgorithmStrategy.Single,
+                AlgorithmList = new[] { DynamicComplexityAnalyzer.AlgorithmType.OptimalDFS },
+                TestLevelCount = 15
+            };
+
+            ExecuteSimplifiedTest(config, "快速切换-单一OptimalDFS", 15);
+        }
+
+        /// <summary>
+        /// 快速切换为算法对比模式
+        /// </summary>
+        [UnityEditor.MenuItem("TileMatch/快速切换/⚔️ 算法对比模式")]
+        public static void QuickSwitchToComparison()
+        {
+            var config = new AlgorithmConfiguration
+            {
+                Strategy = DynamicComplexityAnalyzer.AlgorithmStrategy.Parallel,
+                AlgorithmList = new[] { DynamicComplexityAnalyzer.AlgorithmType.BattleAnalyzer, DynamicComplexityAnalyzer.AlgorithmType.OptimalDFS },
+                TestLevelCount = 15
+            };
+
+            ExecuteSimplifiedTest(config, "快速切换-算法对比", 15);
+        }
+
+        /// <summary>
         /// 简化的测试执行方法
         /// </summary>
-        public static void ExecuteSimplifiedTest(SimplifiedBatchConfiguration config, string testName, int levelCount = 50)
+        public static void ExecuteSimplifiedTest(AlgorithmConfiguration config, string testName, int levelCount = 50)
         {
             try
             {
@@ -737,7 +854,7 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
                 Debug.Log($"测试关卡数量: {levelCount}个");
                 Debug.Log($"静态分析: {(ENABLE_STATIC_ANALYSIS ? "启用" : "禁用")}");
                 Debug.Log($"动态分析: {(ENABLE_DYNAMIC_ANALYSIS ? "启用" : "禁用")}");
-                Debug.Log($"算法对比: 同时运行OptimalDFS和BattleAnalyzer两种算法");
+                Debug.Log($"算法配置: {config.Strategy} - [{string.Join(", ", config.AlgorithmList)}]");
                 Debug.Log($"使用固定随机种子: {FIXED_RANDOM_SEED} (确保结果可重现)");
                 
                 // 创建测试关卡名称
@@ -1229,7 +1346,109 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
             }
             return totalCount;
         }
-        
-        
+
+        /// <summary>
+        /// 从ExecutionResult创建兼容的对比结果（向后兼容）
+        /// </summary>
+        private static DynamicComplexityAnalyzer.AlgorithmComparisonResult CreateComparisonResultFromExecutionResult(DynamicComplexityAnalyzer.ExecutionResult executionResult)
+        {
+            var comparisonResult = new DynamicComplexityAnalyzer.AlgorithmComparisonResult();
+
+            var successResults = executionResult.Results.Where(r => r.Success).ToList();
+            if (successResults.Count >= 2)
+            {
+                comparisonResult.Algorithm1Type = successResults[0].Type;
+                comparisonResult.Algorithm2Type = successResults[1].Type;
+                comparisonResult.Algorithm1Metrics = successResults[0].Metrics;
+                comparisonResult.Algorithm2Metrics = successResults[1].Metrics;
+
+                // 计算对比统计
+                comparisonResult.CalculateComparison();
+            }
+            else if (successResults.Count == 1)
+            {
+                comparisonResult.Algorithm1Type = successResults[0].Type;
+                comparisonResult.Algorithm1Metrics = successResults[0].Metrics;
+                comparisonResult.ErrorMessage = "只有一个算法执行成功";
+            }
+            else
+            {
+                comparisonResult.ErrorMessage = "没有算法执行成功";
+            }
+
+            return comparisonResult;
+        }
+
+        #region 算法管理测试方法
+
+        /// <summary>
+        /// 测试单一算法执行
+        /// </summary>
+        [UnityEditor.MenuItem("TileMatch/算法测试/🔬 测试单一算法(OptimalDFS)")]
+        public static void TestSingleAlgorithm()
+        {
+            var config = new AlgorithmConfiguration
+            {
+                Strategy = DynamicComplexityAnalyzer.AlgorithmStrategy.Single,
+                AlgorithmList = new[] { DynamicComplexityAnalyzer.AlgorithmType.OptimalDFS },
+                TestLevelCount = 3
+            };
+
+            ExecuteSimplifiedTest(config, "单一算法测试(OptimalDFS)", 3);
+        }
+
+        /// <summary>
+        /// 测试算法对比（保持现有功能）
+        /// </summary>
+        [UnityEditor.MenuItem("TileMatch/算法测试/⚔️ 测试算法对比(OptimalDFS vs BattleAnalyzer)")]
+        public static void TestAlgorithmComparison()
+        {
+            var config = new AlgorithmConfiguration
+            {
+                Strategy = DynamicComplexityAnalyzer.AlgorithmStrategy.Parallel,
+                AlgorithmList = new[] { DynamicComplexityAnalyzer.AlgorithmType.OptimalDFS, DynamicComplexityAnalyzer.AlgorithmType.BattleAnalyzer },
+                TestLevelCount = 3
+            };
+
+            ExecuteSimplifiedTest(config, "算法对比测试", 3);
+        }
+
+        /// <summary>
+        /// 测试回退算法
+        /// </summary>
+        [UnityEditor.MenuItem("TileMatch/算法测试/🔄 测试回退算法")]
+        public static void TestFallbackAlgorithm()
+        {
+            var config = new AlgorithmConfiguration
+            {
+                Strategy = DynamicComplexityAnalyzer.AlgorithmStrategy.Fallback,
+                AlgorithmList = new[] { DynamicComplexityAnalyzer.AlgorithmType.BattleAnalyzer, DynamicComplexityAnalyzer.AlgorithmType.OptimalDFS },
+                EnableRetry = true,
+                MaxRetryCount = 1,
+                TestLevelCount = 3
+            };
+
+            ExecuteSimplifiedTest(config, "回退算法测试(BattleAnalyzer→OptimalDFS)", 3);
+        }
+
+        /// <summary>
+        /// 测试最优算法选择
+        /// </summary>
+        [UnityEditor.MenuItem("TileMatch/算法测试/🏆 测试最优算法选择")]
+        public static void TestBestAlgorithm()
+        {
+            var config = new AlgorithmConfiguration
+            {
+                Strategy = DynamicComplexityAnalyzer.AlgorithmStrategy.Best,
+                AlgorithmList = new[] { DynamicComplexityAnalyzer.AlgorithmType.BattleAnalyzer, DynamicComplexityAnalyzer.AlgorithmType.OptimalDFS },
+                TestLevelCount = 3
+            };
+
+            ExecuteSimplifiedTest(config, "最优算法选择测试", 3);
+        }
+
+        #endregion
+
+
     }
 }

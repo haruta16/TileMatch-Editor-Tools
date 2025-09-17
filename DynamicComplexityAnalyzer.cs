@@ -633,6 +633,225 @@ namespace DGuo.Client.TileMatch.DesignerAlgo.Evaluation
         }
 
         /// <summary>
+        /// 算法执行策略枚举
+        /// </summary>
+        public enum AlgorithmStrategy
+        {
+            Single,    // 运行第一个算法
+            Parallel,  // 并行运行所有算法
+            Fallback,  // 依序尝试直到成功
+            Best       // 选择最优结果
+        }
+
+        /// <summary>
+        /// 算法执行结果
+        /// </summary>
+        [System.Serializable]
+        public class ExecutionResult
+        {
+            public bool Success { get; set; }
+            public string ErrorMessage { get; set; }
+            public List<AlgorithmResult> Results { get; set; } = new List<AlgorithmResult>();
+            public AlgorithmResult BestResult => Results.Where(r => r.Success).OrderBy(r => r.Metrics?.TotalMoves ?? int.MaxValue).FirstOrDefault();
+        }
+
+        /// <summary>
+        /// 单个算法执行结果
+        /// </summary>
+        [System.Serializable]
+        public class AlgorithmResult
+        {
+            public AlgorithmType Type { get; set; }
+            public string Name { get; set; }
+            public DynamicComplexityMetrics Metrics { get; set; }
+            public bool Success { get; set; }
+            public string Error { get; set; }
+        }
+
+        /// <summary>
+        /// 算法执行器 - 统一管理多种算法执行策略
+        /// </summary>
+        public static class AlgorithmExecutor
+        {
+            /// <summary>
+            /// 根据策略执行算法
+            /// </summary>
+            public static ExecutionResult Execute(
+                AlgorithmStrategy strategy,
+                AlgorithmType[] algorithmList,
+                List<Tile> tiles,
+                int[] experienceMode,
+                TerrainAnalysisResult terrainAnalysis,
+                bool enableRetry = true,
+                int maxRetryCount = 2)
+            {
+                return strategy switch
+                {
+                    AlgorithmStrategy.Single => ExecuteSingle(algorithmList[0], tiles, experienceMode, terrainAnalysis, enableRetry, maxRetryCount),
+                    AlgorithmStrategy.Parallel => ExecuteParallel(algorithmList, tiles, experienceMode, terrainAnalysis),
+                    AlgorithmStrategy.Fallback => ExecuteFallback(algorithmList, tiles, experienceMode, terrainAnalysis, maxRetryCount),
+                    AlgorithmStrategy.Best => ExecuteBest(algorithmList, tiles, experienceMode, terrainAnalysis),
+                    _ => throw new ArgumentException($"未支持的算法策略: {strategy}")
+                };
+            }
+
+            /// <summary>
+            /// 执行单一算法
+            /// </summary>
+            private static ExecutionResult ExecuteSingle(
+                AlgorithmType algorithm,
+                List<Tile> tiles,
+                int[] experienceMode,
+                TerrainAnalysisResult terrainAnalysis,
+                bool enableRetry,
+                int maxRetryCount)
+            {
+                var result = new ExecutionResult();
+                int attempt = 0;
+
+                while (attempt <= maxRetryCount)
+                {
+                    try
+                    {
+                        var metrics = AnalyzeGameplayComplexity(tiles, experienceMode, terrainAnalysis, algorithm);
+                        result.Results.Add(new AlgorithmResult
+                        {
+                            Type = algorithm,
+                            Name = algorithm.ToString(),
+                            Metrics = metrics,
+                            Success = true
+                        });
+                        result.Success = true;
+                        break;
+                    }
+                    catch (Exception ex)
+                    {
+                        attempt++;
+                        if (!enableRetry || attempt > maxRetryCount)
+                        {
+                            result.Results.Add(new AlgorithmResult
+                            {
+                                Type = algorithm,
+                                Name = algorithm.ToString(),
+                                Success = false,
+                                Error = ex.Message
+                            });
+                            result.Success = false;
+                            result.ErrorMessage = ex.Message;
+                            break;
+                        }
+                    }
+                }
+
+                return result;
+            }
+
+            /// <summary>
+            /// 并行执行多个算法
+            /// </summary>
+            private static ExecutionResult ExecuteParallel(
+                AlgorithmType[] algorithms,
+                List<Tile> tiles,
+                int[] experienceMode,
+                TerrainAnalysisResult terrainAnalysis)
+            {
+                var result = new ExecutionResult();
+                bool hasSuccess = false;
+
+                foreach (var algorithm in algorithms)
+                {
+                    try
+                    {
+                        var metrics = AnalyzeGameplayComplexity(tiles, experienceMode, terrainAnalysis, algorithm);
+                        result.Results.Add(new AlgorithmResult
+                        {
+                            Type = algorithm,
+                            Name = algorithm.ToString(),
+                            Metrics = metrics,
+                            Success = true
+                        });
+                        hasSuccess = true;
+                    }
+                    catch (Exception ex)
+                    {
+                        result.Results.Add(new AlgorithmResult
+                        {
+                            Type = algorithm,
+                            Name = algorithm.ToString(),
+                            Success = false,
+                            Error = ex.Message
+                        });
+                    }
+                }
+
+                result.Success = hasSuccess;
+                if (!hasSuccess)
+                {
+                    result.ErrorMessage = "所有算法都执行失败";
+                }
+
+                return result;
+            }
+
+            /// <summary>
+            /// 回退执行算法（依序尝试直到成功）
+            /// </summary>
+            private static ExecutionResult ExecuteFallback(
+                AlgorithmType[] algorithms,
+                List<Tile> tiles,
+                int[] experienceMode,
+                TerrainAnalysisResult terrainAnalysis,
+                int maxRetryCount)
+            {
+                var result = new ExecutionResult();
+
+                foreach (var algorithm in algorithms)
+                {
+                    try
+                    {
+                        var metrics = AnalyzeGameplayComplexity(tiles, experienceMode, terrainAnalysis, algorithm);
+                        result.Results.Add(new AlgorithmResult
+                        {
+                            Type = algorithm,
+                            Name = algorithm.ToString(),
+                            Metrics = metrics,
+                            Success = true
+                        });
+                        result.Success = true;
+                        return result; // 成功后立即返回
+                    }
+                    catch (Exception ex)
+                    {
+                        result.Results.Add(new AlgorithmResult
+                        {
+                            Type = algorithm,
+                            Name = algorithm.ToString(),
+                            Success = false,
+                            Error = ex.Message
+                        });
+                    }
+                }
+
+                result.Success = false;
+                result.ErrorMessage = "所有回退算法都执行失败";
+                return result;
+            }
+
+            /// <summary>
+            /// 执行所有算法并选择最优结果
+            /// </summary>
+            private static ExecutionResult ExecuteBest(
+                AlgorithmType[] algorithms,
+                List<Tile> tiles,
+                int[] experienceMode,
+                TerrainAnalysisResult terrainAnalysis)
+            {
+                // 复用并行执行逻辑
+                return ExecuteParallel(algorithms, tiles, experienceMode, terrainAnalysis);
+            }
+        }
+
+        /// <summary>
         /// 纯动态分析方法 - 只负责动态指标计算，由BatchLevelEvaluatorSimple调用
         /// </summary>
         /// <param name="tiles">已分配花色的瓦片列表</param>
