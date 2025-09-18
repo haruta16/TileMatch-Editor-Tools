@@ -61,6 +61,7 @@ namespace DGuo.Client.TileMatch.Analysis
             // 关键快照数据
             public int PeakDockCount { get; set; }
             public int MinMovesToComplete { get; set; }
+            public int InitialMinCost { get; set; } // 游戏开局时的最小cost值
             public double DifficultyPosition { get; set; } // 难点位置：0~1，表示peakdock在关卡进度中的位置
             public List<int> DockAfterTrioMatch { get; set; } = new List<int>();
             public List<int> SafeOptionCounts { get; set; } = new List<int>();
@@ -456,6 +457,9 @@ namespace DGuo.Client.TileMatch.Analysis
                 var algorithm = new DGuo.Client.TileMatch.DesignerAlgo.RuleBasedAlgo.RuleBasedAlgorithm();
                 algorithm.AssignTileTypes(tiles, experienceMode, availableColors);
 
+                // 获取真实使用的算法名称
+                result.AlgorithmName = algorithm.AlgorithmName;
+
                 // 3. 创建虚拟对局环境
                 var tileDict = tiles.ToDictionary(t => t.ID);
                 var elementValues = tiles.Select(t => t.ElementValue).Where(v => v > 0).Distinct().ToList();
@@ -510,6 +514,13 @@ namespace DGuo.Client.TileMatch.Analysis
                 virtualAnalyzer.Analyze();
                 analysisStopwatch.Stop();
                 analysisTimeMs += (int)analysisStopwatch.ElapsedMilliseconds;
+
+                // 在第一次循环时计算游戏开局的最小cost值
+                if (moveCount == 0)
+                {
+                    var (initialMinCost, _) = CalculateMinCostAndOptionsFromExisting(virtualAnalyzer);
+                    result.InitialMinCost = initialMinCost;
+                }
 
                 // 3. 获取可点击的瓦片
                 var clickableTiles = allTiles.Values
@@ -1177,10 +1188,10 @@ namespace DGuo.Client.TileMatch.Analysis
             {
                 var csv = new StringBuilder();
 
-                // CSV表头 - 添加RandomSeed字段
-                csv.AppendLine("UniqueId,TerrainId,LevelName,ExperienceMode,ColorCount,TotalTiles,RandomSeed," +
+                // CSV表头 - 添加InitialMinCost字段
+                csv.AppendLine("UniqueId,TerrainId,LevelName,AlgorithmName,ExperienceMode,ColorCount,TotalTiles,RandomSeed," +
                               "GameCompleted,TotalMoves,GameDurationMs,CompletionStatus," +
-                              "TotalAnalysisTimeMs,SuccessfulGroups," +
+                              "TotalAnalysisTimeMs,SuccessfulGroups,InitialMinCost," +
                               "DifficultyPosition,TileIdSequence,DockCountPerMove,PeakDockCount,DockAfterTrioMatch,SafeOptionCounts," +
                               "MinCostAfterTrioMatch,MinCostOptionsAfterTrioMatch,ErrorMessage");
 
@@ -1194,9 +1205,9 @@ namespace DGuo.Client.TileMatch.Analysis
                     string minCostAfterTrio = result.MinCostAfterTrioMatch.Count > 0 ? string.Join(",", result.MinCostAfterTrioMatch) : "";
                     string minCostOptionsAfterTrio = result.MinCostOptionsAfterTrioMatch.Count > 0 ? string.Join(",", result.MinCostOptionsAfterTrioMatch) : "";
 
-                    csv.AppendLine($"{result.UniqueId},{result.TerrainId},{result.LevelName},\"{expMode}\",{result.ColorCount},{result.TotalTiles},{result.RandomSeed}," +
+                    csv.AppendLine($"{result.UniqueId},{result.TerrainId},{result.LevelName},{result.AlgorithmName},\"{expMode}\",{result.ColorCount},{result.TotalTiles},{result.RandomSeed}," +
                                   $"{result.GameCompleted},{result.TotalMoves},{result.GameDurationMs},\"{result.CompletionStatus}\"," +
-                                  $"{result.TotalAnalysisTimeMs},{result.SuccessfulGroups}," +
+                                  $"{result.TotalAnalysisTimeMs},{result.SuccessfulGroups},{result.InitialMinCost}," +
                                   $"{result.DifficultyPosition:F4},\"{tileSequence}\",\"{dockCounts}\",{result.PeakDockCount},\"{dockAfterTrio}\",\"{safeOptions}\"," +
                                   $"\"{minCostAfterTrio}\",\"{minCostOptionsAfterTrio}\",\"{result.ErrorMessage ?? ""}\"");
                 }
