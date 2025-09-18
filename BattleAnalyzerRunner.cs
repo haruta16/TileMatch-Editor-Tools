@@ -40,6 +40,7 @@ namespace DGuo.Client.TileMatch.Analysis
             public string UniqueId { get; set; } // 唯一标识符
             public int TerrainId { get; set; }
             public string LevelName { get; set; }
+            public string AlgorithmName { get; set; } // 生成算法版本名
             public int[] ExperienceMode { get; set; }
             public int ColorCount { get; set; }
             public int TotalTiles { get; set; }
@@ -741,7 +742,7 @@ namespace DGuo.Client.TileMatch.Analysis
         {
             foreach (var tile in allTiles.Values)
             {
-                tile.runtimeDependencies = new List<int>();
+                tile.runtimeDependencies = new HashSet<int>();
 
                 if (tile.PileType == PileType.Desk)
                 {
