@@ -37,6 +37,7 @@ namespace DGuo.Client.TileMatch.Analysis
         /// </summary>
         public class AnalysisResult
         {
+            public string UniqueId { get; set; } // 唯一标识符
             public int TerrainId { get; set; }
             public string LevelName { get; set; }
             public int[] ExperienceMode { get; set; }
@@ -82,9 +83,9 @@ namespace DGuo.Client.TileMatch.Analysis
             public int TestLevelCount = 50; // 测试关卡数量
 
             [Header("=== 随机种子配置 ===")]
-            public bool UseFixedSeed = false; // 是否使用固定种子：true=结果可重现，false=完全随机
+            public bool UseFixedSeed = true; // 是否使用固定种子：true=结果可重现，false=完全随机
             public int FixedSeedValue = 12345678; // 固定种子值（当UseFixedSeed=true时使用）
-            public int RunsPerLevel = 10; // 每个关卡运行次数：1-5次，用于生成多样化数据
+            public int RunsPerLevel = 1; // 每个关卡运行次数：用于生成多样化数据
 
             [Header("=== 输出配置 ===")]
             public string OutputDirectory = "BattleAnalysisResults";
@@ -1131,6 +1132,7 @@ namespace DGuo.Client.TileMatch.Analysis
             Debug.Log($"关卡数量: {config.TestLevelCount}, 总任务数: {totalTasks}");
 
             int completedTasks = 0;
+            int uniqueIdCounter = 1; // 唯一ID计数器
 
             foreach (var kvp in levelConfigs)
             {
@@ -1153,6 +1155,8 @@ namespace DGuo.Client.TileMatch.Analysis
 
                             var result = RunSingleLevelAnalysis(levelName, experienceMode, colorCount, randomSeed);
                             result.TerrainId = terrainId;
+                            result.UniqueId = $"BA_{uniqueIdCounter:D6}"; // 生成唯一ID：BA_000001, BA_000002...
+                            uniqueIdCounter++;
                             results.Add(result);
                         }
                     }
@@ -1173,7 +1177,7 @@ namespace DGuo.Client.TileMatch.Analysis
                 var csv = new StringBuilder();
 
                 // CSV表头 - 添加RandomSeed字段
-                csv.AppendLine("TerrainId,LevelName,ExperienceMode,ColorCount,TotalTiles,RandomSeed," +
+                csv.AppendLine("UniqueId,TerrainId,LevelName,ExperienceMode,ColorCount,TotalTiles,RandomSeed," +
                               "GameCompleted,TotalMoves,GameDurationMs,CompletionStatus," +
                               "TotalAnalysisTimeMs,SuccessfulGroups," +
                               "DifficultyPosition,TileIdSequence,DockCountPerMove,PeakDockCount,DockAfterTrioMatch,SafeOptionCounts," +
@@ -1189,7 +1193,7 @@ namespace DGuo.Client.TileMatch.Analysis
                     string minCostAfterTrio = result.MinCostAfterTrioMatch.Count > 0 ? string.Join(",", result.MinCostAfterTrioMatch) : "";
                     string minCostOptionsAfterTrio = result.MinCostOptionsAfterTrioMatch.Count > 0 ? string.Join(",", result.MinCostOptionsAfterTrioMatch) : "";
 
-                    csv.AppendLine($"{result.TerrainId},{result.LevelName},\"{expMode}\",{result.ColorCount},{result.TotalTiles},{result.RandomSeed}," +
+                    csv.AppendLine($"{result.UniqueId},{result.TerrainId},{result.LevelName},\"{expMode}\",{result.ColorCount},{result.TotalTiles},{result.RandomSeed}," +
                                   $"{result.GameCompleted},{result.TotalMoves},{result.GameDurationMs},\"{result.CompletionStatus}\"," +
                                   $"{result.TotalAnalysisTimeMs},{result.SuccessfulGroups}," +
                                   $"{result.DifficultyPosition:F4},\"{tileSequence}\",\"{dockCounts}\",{result.PeakDockCount},\"{dockAfterTrio}\",\"{safeOptions}\"," +
