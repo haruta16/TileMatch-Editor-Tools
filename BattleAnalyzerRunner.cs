@@ -516,12 +516,9 @@ namespace DGuo.Client.TileMatch.Analysis
                     .Where(t => t.PileType == PileType.Desk && t.IsClickable)
                     .ToList();
 
-                // 记录安全选项数量（当dock≥4时）
-                if (dockTiles.Count >= 4)
-                {
-                    int safeOptionCount = CountSafeOptions(virtualAnalyzer, dockTiles.Count);
-                    result.SafeOptionCounts.Add(safeOptionCount);
-                }
+                // 记录安全选项数量（每步都记录，dock<4时记录0）
+                int safeOptionCount = dockTiles.Count >= 4 ? CountSafeOptions(virtualAnalyzer, dockTiles.Count) : 0;
+                result.SafeOptionCounts.Add(safeOptionCount);
 
                 // 4. 检查胜利条件
                 if (clickableTiles.Count == 0 && allTiles.Values.All(t => t.PileType != PileType.Desk))
@@ -565,6 +562,7 @@ namespace DGuo.Client.TileMatch.Analysis
 
                 // 8. 检查并执行消除
                 bool matchOccurred = false;
+
                 while (true)
                 {
                     var matchedTiles = FindMatchInDock(dockTiles);
@@ -583,6 +581,12 @@ namespace DGuo.Client.TileMatch.Analysis
 
                     // 记录三消后的dock数量
                     result.DockAfterTrioMatch.Add(dockTiles.Count);
+
+                    // 三消完成后，重新分析并记录cost信息
+                    virtualAnalyzer.Analyze();
+                    var (postTrioCost, postTrioOptions) = CalculateMinCostAndOptionsFromExisting(virtualAnalyzer);
+                    result.MinCostAfterTrioMatch.Add(postTrioCost);
+                    result.MinCostOptionsAfterTrioMatch.Add(postTrioOptions);
                 }
 
                 // 9. 检查死亡条件
@@ -635,6 +639,21 @@ namespace DGuo.Client.TileMatch.Analysis
             }
 
             return safeCount;
+        }
+
+        /// <summary>
+        /// 计算当前场面的最小cost和拥有最小cost的组合数量（基于已有分析结果）
+        /// </summary>
+        private static (int minCost, int optionsCount) CalculateMinCostAndOptionsFromExisting(VirtualBattleAnalyzer analyzer)
+        {
+            var allBestMatches = analyzer.GetAllBestMatchGroups();
+            if (allBestMatches.Count == 0)
+                return (-1, 0);
+
+            int minCost = allBestMatches.Values.Min(m => m.totalCost);
+            int optionsCount = allBestMatches.Values.Count(m => m.totalCost == minCost);
+
+            return (minCost, optionsCount);
         }
 
         /// <summary>
@@ -1079,7 +1098,8 @@ namespace DGuo.Client.TileMatch.Analysis
                 csv.AppendLine("TerrainId,LevelName,ExperienceMode,ColorCount,TotalTiles,RandomSeed," +
                               "GameCompleted,TotalMoves,GameDurationMs,CompletionStatus," +
                               "TotalAnalysisCalls,TotalAnalysisTimeMs,SuccessfulMoves," +
-                              "TileIdSequence,DockCountPerMove,PeakDockCount,DockAfterTrioMatch,SafeOptionCounts,ErrorMessage");
+                              "TileIdSequence,DockCountPerMove,PeakDockCount,DockAfterTrioMatch,SafeOptionCounts," +
+                              "MinCostAfterTrioMatch,MinCostOptionsAfterTrioMatch,ErrorMessage");
 
                 foreach (var result in results)
                 {
@@ -1088,11 +1108,14 @@ namespace DGuo.Client.TileMatch.Analysis
                     string dockCounts = result.DockCountPerMove.Count > 0 ? string.Join(",", result.DockCountPerMove) : "";
                     string dockAfterTrio = result.DockAfterTrioMatch.Count > 0 ? string.Join(",", result.DockAfterTrioMatch) : "";
                     string safeOptions = result.SafeOptionCounts.Count > 0 ? string.Join(",", result.SafeOptionCounts) : "";
+                    string minCostAfterTrio = result.MinCostAfterTrioMatch.Count > 0 ? string.Join(",", result.MinCostAfterTrioMatch) : "";
+                    string minCostOptionsAfterTrio = result.MinCostOptionsAfterTrioMatch.Count > 0 ? string.Join(",", result.MinCostOptionsAfterTrioMatch) : "";
 
                     csv.AppendLine($"{result.TerrainId},{result.LevelName},\"{expMode}\",{result.ColorCount},{result.TotalTiles},{result.RandomSeed}," +
                                   $"{result.GameCompleted},{result.TotalMoves},{result.GameDurationMs},\"{result.CompletionStatus}\"," +
                                   $"{result.TotalAnalysisCalls},{result.TotalAnalysisTimeMs},{result.SuccessfulMoves}," +
-                                  $"\"{tileSequence}\",\"{dockCounts}\",{result.PeakDockCount},\"{dockAfterTrio}\",\"{safeOptions}\",\"{result.ErrorMessage ?? ""}\"");
+                                  $"\"{tileSequence}\",\"{dockCounts}\",{result.PeakDockCount},\"{dockAfterTrio}\",\"{safeOptions}\"," +
+                                  $"\"{minCostAfterTrio}\",\"{minCostOptionsAfterTrio}\",\"{result.ErrorMessage ?? ""}\"");
                 }
 
                 var directory = Path.GetDirectoryName(outputPath);
