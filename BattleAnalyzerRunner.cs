@@ -51,15 +51,15 @@ namespace DGuo.Client.TileMatch.Analysis
             public string CompletionStatus { get; set; }
 
             // BattleAnalyzer分析结果
-            public int TotalAnalysisCalls { get; set; }
             public int TotalAnalysisTimeMs { get; set; }
-            public int SuccessfulMoves { get; set; }
+            public int SuccessfulGroups { get; set; }
             public List<int> TileIdSequence { get; set; } = new List<int>();
             public List<int> DockCountPerMove { get; set; } = new List<int>();
 
             // 关键快照数据
             public int PeakDockCount { get; set; }
             public int MinMovesToComplete { get; set; }
+            public double DifficultyPosition { get; set; } // 难点位置：0~1，表示peakdock在关卡进度中的位置
             public List<int> DockAfterTrioMatch { get; set; } = new List<int>();
             public List<int> SafeOptionCounts { get; set; } = new List<int>();
             public List<int> MinCostAfterTrioMatch { get; set; } = new List<int>();
@@ -84,7 +84,7 @@ namespace DGuo.Client.TileMatch.Analysis
             [Header("=== 随机种子配置 ===")]
             public bool UseFixedSeed = false; // 是否使用固定种子：true=结果可重现，false=完全随机
             public int FixedSeedValue = 12345678; // 固定种子值（当UseFixedSeed=true时使用）
-            public int RunsPerLevel = 1; // 每个关卡运行次数：1-5次，用于生成多样化数据
+            public int RunsPerLevel = 10; // 每个关卡运行次数：1-5次，用于生成多样化数据
 
             [Header("=== 输出配置 ===")]
             public string OutputDirectory = "BattleAnalysisResults";
@@ -483,9 +483,8 @@ namespace DGuo.Client.TileMatch.Analysis
             // 初始化状态
             var dockTiles = new List<Tile>();
             int moveCount = 0;
-            int analysisCalls = 0;
             int analysisTimeMs = 0;
-            int successfulMoves = 0;
+            int SuccessfulGroups = 0;
             int peakDockCount = 0;
 
             // 初始化所有瓦片状态
@@ -506,7 +505,6 @@ namespace DGuo.Client.TileMatch.Analysis
 
                 // 2. 分析当前局面 - 完全复现AnalyzerMgr.Analyze逻辑
                 var analysisStopwatch = System.Diagnostics.Stopwatch.StartNew();
-                analysisCalls++;
                 virtualAnalyzer.Analyze();
                 analysisStopwatch.Stop();
                 analysisTimeMs += (int)analysisStopwatch.ElapsedMilliseconds;
@@ -576,7 +574,7 @@ namespace DGuo.Client.TileMatch.Analysis
                         tile.SetFlag(ETileFlag.Destroyed);
                         tile.PileType = PileType.Discard;
                     }
-                    successfulMoves++;
+                    SuccessfulGroups++;
                     matchOccurred = true;
 
                     // 记录三消后的dock数量
@@ -606,11 +604,13 @@ namespace DGuo.Client.TileMatch.Analysis
 
             // 设置结果
             result.TotalMoves = moveCount;
-            result.TotalAnalysisCalls = analysisCalls;
             result.TotalAnalysisTimeMs = analysisTimeMs;
-            result.SuccessfulMoves = successfulMoves;
+            result.SuccessfulGroups = SuccessfulGroups;
             result.PeakDockCount = peakDockCount;
             result.MinMovesToComplete = result.TileIdSequence.Count;
+
+            // 计算难点位置
+            result.DifficultyPosition = CalculateDifficultyPosition(result.DockCountPerMove, peakDockCount);
 
             if (string.IsNullOrEmpty(result.CompletionStatus))
             {
@@ -651,6 +651,71 @@ namespace DGuo.Client.TileMatch.Analysis
             }
 
             return safeCount;
+        }
+
+        /// <summary>
+        /// 计算难点位置：基于peakdock在关卡进度中的位置（0~1）
+        /// </summary>
+        private static double CalculateDifficultyPosition(List<int> dockCountPerMove, int peakDockCount)
+        {
+            if (dockCountPerMove.Count == 0)
+                return 0.0;
+
+            // 找到所有等于peakdock的位置（从0开始的索引）
+            var peakPositions = new List<int>();
+            for (int i = 0; i < dockCountPerMove.Count; i++)
+            {
+                if (dockCountPerMove[i] == peakDockCount)
+                {
+                    peakPositions.Add(i);
+                }
+            }
+
+            if (peakPositions.Count == 0)
+                return 0.0;
+
+            // 如果只有一个峰值位置，直接返回
+            if (peakPositions.Count == 1)
+            {
+                return (double)peakPositions[0] / (dockCountPerMove.Count - 1);
+            }
+
+            // 多个峰值位置时，比较周围区域的dock均值，选择更高的
+            int bestPosition = peakPositions[0];
+            double bestSurroundingAverage = 0.0;
+
+            foreach (int position in peakPositions)
+            {
+                double surroundingAverage = CalculateSurroundingAverage(dockCountPerMove, position);
+                if (surroundingAverage > bestSurroundingAverage)
+                {
+                    bestSurroundingAverage = surroundingAverage;
+                    bestPosition = position;
+                }
+            }
+
+            return (double)bestPosition / (dockCountPerMove.Count - 1);
+        }
+
+        /// <summary>
+        /// 计算指定位置周围区域的dock均值（窗口大小为5）
+        /// </summary>
+        private static double CalculateSurroundingAverage(List<int> dockCountPerMove, int centerPosition)
+        {
+            int windowSize = 5;
+            int halfWindow = windowSize / 2;
+            int startPos = Math.Max(0, centerPosition - halfWindow);
+            int endPos = Math.Min(dockCountPerMove.Count - 1, centerPosition + halfWindow);
+
+            double sum = 0.0;
+            int count = 0;
+            for (int i = startPos; i <= endPos; i++)
+            {
+                sum += dockCountPerMove[i];
+                count++;
+            }
+
+            return count > 0 ? sum / count : 0.0;
         }
 
         /// <summary>
@@ -1110,8 +1175,8 @@ namespace DGuo.Client.TileMatch.Analysis
                 // CSV表头 - 添加RandomSeed字段
                 csv.AppendLine("TerrainId,LevelName,ExperienceMode,ColorCount,TotalTiles,RandomSeed," +
                               "GameCompleted,TotalMoves,GameDurationMs,CompletionStatus," +
-                              "TotalAnalysisCalls,TotalAnalysisTimeMs,SuccessfulMoves," +
-                              "TileIdSequence,DockCountPerMove,PeakDockCount,DockAfterTrioMatch,SafeOptionCounts," +
+                              "TotalAnalysisTimeMs,SuccessfulGroups," +
+                              "DifficultyPosition,TileIdSequence,DockCountPerMove,PeakDockCount,DockAfterTrioMatch,SafeOptionCounts," +
                               "MinCostAfterTrioMatch,MinCostOptionsAfterTrioMatch,ErrorMessage");
 
                 foreach (var result in results)
@@ -1126,8 +1191,8 @@ namespace DGuo.Client.TileMatch.Analysis
 
                     csv.AppendLine($"{result.TerrainId},{result.LevelName},\"{expMode}\",{result.ColorCount},{result.TotalTiles},{result.RandomSeed}," +
                                   $"{result.GameCompleted},{result.TotalMoves},{result.GameDurationMs},\"{result.CompletionStatus}\"," +
-                                  $"{result.TotalAnalysisCalls},{result.TotalAnalysisTimeMs},{result.SuccessfulMoves}," +
-                                  $"\"{tileSequence}\",\"{dockCounts}\",{result.PeakDockCount},\"{dockAfterTrio}\",\"{safeOptions}\"," +
+                                  $"{result.TotalAnalysisTimeMs},{result.SuccessfulGroups}," +
+                                  $"{result.DifficultyPosition:F4},\"{tileSequence}\",\"{dockCounts}\",{result.PeakDockCount},\"{dockAfterTrio}\",\"{safeOptions}\"," +
                                   $"\"{minCostAfterTrio}\",\"{minCostOptionsAfterTrio}\",\"{result.ErrorMessage ?? ""}\"");
                 }
 
