@@ -621,18 +621,30 @@ namespace DGuo.Client.TileMatch.Analysis
         }
 
         /// <summary>
-        /// 计算安全选项数量：cost + dock <= 7 的选项数量
+        /// 计算安全选项数量：拥有全局最小cost且cost + dock <= 7的组合总数量
         /// </summary>
         private static int CountSafeOptions(VirtualBattleAnalyzer analyzer, int currentDockCount)
         {
-            var allBestMatches = analyzer.GetAllBestMatchGroups();
-            if (allBestMatches.Count == 0)
+            var allMatchGroups = new List<TileMatchBattleAnalyzerMgr.MatchGroup>();
+
+            // 收集所有花色的所有组合
+            foreach (var elementValue in analyzer.ElementValues)
+            {
+                var matchGroups = analyzer.GetMatchGroups(elementValue);
+                allMatchGroups.AddRange(matchGroups);
+            }
+
+            if (allMatchGroups.Count == 0)
                 return 0;
 
+            // 找到全局最小cost
+            int globalMinCost = allMatchGroups.Min(g => g.totalCost);
+
+            // 统计最小cost且安全的组合数量
             int safeCount = 0;
-            foreach (var matchGroup in allBestMatches.Values)
+            foreach (var matchGroup in allMatchGroups)
             {
-                if (matchGroup.totalCost + currentDockCount <= 7)
+                if (matchGroup.totalCost == globalMinCost && matchGroup.totalCost + currentDockCount <= 7)
                 {
                     safeCount++;
                 }
@@ -726,6 +738,7 @@ namespace DGuo.Client.TileMatch.Analysis
         private class VirtualBattleAnalyzer
         {
             public Dictionary<int, Tile> AllTiles { get; private set; }
+            public List<int> ElementValues => _elementValues;
             private Dictionary<int, List<TileMatchBattleAnalyzerMgr.MatchGroup>> _matchGroups;
             private List<int> _elementValues;
 
