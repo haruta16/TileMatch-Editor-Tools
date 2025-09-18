@@ -60,6 +60,10 @@ namespace DGuo.Client.TileMatch.Analysis
             // 关键快照数据
             public int PeakDockCount { get; set; }
             public int MinMovesToComplete { get; set; }
+            public List<int> DockAfterTrioMatch { get; set; } = new List<int>();
+            public List<int> SafeOptionCounts { get; set; } = new List<int>();
+            public List<int> MinCostAfterTrioMatch { get; set; } = new List<int>();
+            public List<int> MinCostOptionsAfterTrioMatch { get; set; } = new List<int>();
 
             public string ErrorMessage { get; set; }
         }
@@ -71,8 +75,8 @@ namespace DGuo.Client.TileMatch.Analysis
         public class RunConfig
         {
             [Header("=== CSV配置选择器 ===")]
-            public int ExperienceConfigEnum = -1; // 体验模式枚举：1=exp-fix-1, 2=exp-fix-2, -1=exp-range-1所有配置
-            public int ColorCountConfigEnum = -1; // 花色数量枚举：1=type-count-1, 2=type-count-2, -1=type-range-1所有配置
+            public int ExperienceConfigEnum = 1; // 体验模式枚举：1=exp-fix-1, 2=exp-fix-2, -1=exp-range-1所有配置
+            public int ColorCountConfigEnum = 1; // 花色数量枚举：1=type-count-1, 2=type-count-2, -1=type-range-1所有配置
 
             [Header("=== 测试参数 ===")]
             public int TestLevelCount = 50; // 测试关卡数量
@@ -80,7 +84,7 @@ namespace DGuo.Client.TileMatch.Analysis
             [Header("=== 随机种子配置 ===")]
             public bool UseFixedSeed = false; // 是否使用固定种子：true=结果可重现，false=完全随机
             public int FixedSeedValue = 12345678; // 固定种子值（当UseFixedSeed=true时使用）
-            public int RunsPerLevel = 3; // 每个关卡运行次数：1-5次，用于生成多样化数据
+            public int RunsPerLevel = 1; // 每个关卡运行次数：1-5次，用于生成多样化数据
 
             [Header("=== 输出配置 ===")]
             public string OutputDirectory = "BattleAnalysisResults";
@@ -512,6 +516,13 @@ namespace DGuo.Client.TileMatch.Analysis
                     .Where(t => t.PileType == PileType.Desk && t.IsClickable)
                     .ToList();
 
+                // 记录安全选项数量（当dock≥4时）
+                if (dockTiles.Count >= 4)
+                {
+                    int safeOptionCount = CountSafeOptions(virtualAnalyzer, dockTiles.Count);
+                    result.SafeOptionCounts.Add(safeOptionCount);
+                }
+
                 // 4. 检查胜利条件
                 if (clickableTiles.Count == 0 && allTiles.Values.All(t => t.PileType != PileType.Desk))
                 {
@@ -569,6 +580,9 @@ namespace DGuo.Client.TileMatch.Analysis
                     }
                     successfulMoves++;
                     matchOccurred = true;
+
+                    // 记录三消后的dock数量
+                    result.DockAfterTrioMatch.Add(dockTiles.Count);
                 }
 
                 // 9. 检查死亡条件
@@ -600,6 +614,27 @@ namespace DGuo.Client.TileMatch.Analysis
             }
 
             return result;
+        }
+
+        /// <summary>
+        /// 计算安全选项数量：cost + dock <= 7 的选项数量
+        /// </summary>
+        private static int CountSafeOptions(VirtualBattleAnalyzer analyzer, int currentDockCount)
+        {
+            var allBestMatches = analyzer.GetAllBestMatchGroups();
+            if (allBestMatches.Count == 0)
+                return 0;
+
+            int safeCount = 0;
+            foreach (var matchGroup in allBestMatches.Values)
+            {
+                if (matchGroup.totalCost + currentDockCount <= 7)
+                {
+                    safeCount++;
+                }
+            }
+
+            return safeCount;
         }
 
         /// <summary>
@@ -1044,18 +1079,20 @@ namespace DGuo.Client.TileMatch.Analysis
                 csv.AppendLine("TerrainId,LevelName,ExperienceMode,ColorCount,TotalTiles,RandomSeed," +
                               "GameCompleted,TotalMoves,GameDurationMs,CompletionStatus," +
                               "TotalAnalysisCalls,TotalAnalysisTimeMs,SuccessfulMoves," +
-                              "TileIdSequence,DockCountPerMove,PeakDockCount,MinMovesToComplete,ErrorMessage");
+                              "TileIdSequence,DockCountPerMove,PeakDockCount,DockAfterTrioMatch,SafeOptionCounts,ErrorMessage");
 
                 foreach (var result in results)
                 {
                     string expMode = $"[{string.Join(",", result.ExperienceMode)}]";
                     string tileSequence = result.TileIdSequence.Count > 0 ? string.Join(",", result.TileIdSequence) : "";
                     string dockCounts = result.DockCountPerMove.Count > 0 ? string.Join(",", result.DockCountPerMove) : "";
+                    string dockAfterTrio = result.DockAfterTrioMatch.Count > 0 ? string.Join(",", result.DockAfterTrioMatch) : "";
+                    string safeOptions = result.SafeOptionCounts.Count > 0 ? string.Join(",", result.SafeOptionCounts) : "";
 
                     csv.AppendLine($"{result.TerrainId},{result.LevelName},\"{expMode}\",{result.ColorCount},{result.TotalTiles},{result.RandomSeed}," +
                                   $"{result.GameCompleted},{result.TotalMoves},{result.GameDurationMs},\"{result.CompletionStatus}\"," +
                                   $"{result.TotalAnalysisCalls},{result.TotalAnalysisTimeMs},{result.SuccessfulMoves}," +
-                                  $"\"{tileSequence}\",\"{dockCounts}\",{result.PeakDockCount},{result.MinMovesToComplete},\"{result.ErrorMessage ?? ""}\"");
+                                  $"\"{tileSequence}\",\"{dockCounts}\",{result.PeakDockCount},\"{dockAfterTrio}\",\"{safeOptions}\",\"{result.ErrorMessage ?? ""}\"");
                 }
 
                 var directory = Path.GetDirectoryName(outputPath);
