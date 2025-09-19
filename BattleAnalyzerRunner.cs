@@ -26,9 +26,17 @@ namespace DGuo.Client.TileMatch.Analysis
             public int TerrainId { get; set; }
             public int[] ExpFix1 { get; set; }
             public int[] ExpFix2 { get; set; }
+            public int[] ExpFix3 { get; set; }
+            public int[] ExpFix4 { get; set; }
+            public int[] ExpFix5 { get; set; }
+            public int[] ExpFix6 { get; set; }
             public int[] ExpRange1 { get; set; }
             public int TypeCount1 { get; set; }
             public int TypeCount2 { get; set; }
+            public int TypeCount3 { get; set; }
+            public int TypeCount4 { get; set; }
+            public int TypeCount5 { get; set; }
+            public int TypeCount6 { get; set; }
             public int TypeRange1 { get; set; }
         }
 
@@ -67,6 +75,7 @@ namespace DGuo.Client.TileMatch.Analysis
             public List<int> SafeOptionCounts { get; set; } = new List<int>();
             public List<int> MinCostAfterTrioMatch { get; set; } = new List<int>();
             public List<int> MinCostOptionsAfterTrioMatch { get; set; } = new List<int>();
+            public List<int> PressureValues { get; set; } = new List<int>(); // 压力值列表：开局+每次三消后
 
             public string ErrorMessage { get; set; }
         }
@@ -118,6 +127,10 @@ namespace DGuo.Client.TileMatch.Analysis
                 {
                     1 => "ExpFix1",
                     2 => "ExpFix2",
+                    3 => "ExpFix3",
+                    4 => "ExpFix4",
+                    5 => "ExpFix5",
+                    6 => "ExpFix6",
                     -1 => "所有ExpRange1配置",
                     -2 => "所有ExpRange2配置",
                     _ => $"配置{ExperienceConfigEnum}"
@@ -127,6 +140,10 @@ namespace DGuo.Client.TileMatch.Analysis
                 {
                     1 => "TypeCount1",
                     2 => "TypeCount2",
+                    3 => "TypeCount3",
+                    4 => "TypeCount4",
+                    5 => "TypeCount5",
+                    6 => "TypeCount6",
                     -1 => "所有TypeRange1配置",
                     -2 => "所有TypeRange2配置",
                     _ => $"配置{ColorCountConfigEnum}"
@@ -166,17 +183,25 @@ namespace DGuo.Client.TileMatch.Analysis
                     for (int i = 1; i < lines.Length; i++) // 跳过表头
                     {
                         var parts = CsvParser.ParseCsvLine(lines[i]);
-                        if (parts.Length >= 7 && int.TryParse(parts[0], out int terrainId))
+                        if (parts.Length >= 15 && int.TryParse(parts[0], out int terrainId))
                         {
                             var config = new CsvLevelConfig
                             {
                                 TerrainId = terrainId,
                                 ExpFix1 = CsvParser.ParseIntArray(parts[1]),
                                 ExpFix2 = CsvParser.ParseIntArray(parts[2]),
-                                ExpRange1 = CsvParser.ParseIntArray(parts[3]),
-                                TypeCount1 = CsvParser.ParseIntOrDefault(parts[4], 7),
-                                TypeCount2 = CsvParser.ParseIntOrDefault(parts[5], 8),
-                                TypeRange1 = CsvParser.ParseIntOrDefault(parts[6], 7)
+                                ExpFix3 = CsvParser.ParseIntArray(parts[3]),
+                                ExpFix4 = CsvParser.ParseIntArray(parts[4]),
+                                ExpFix5 = CsvParser.ParseIntArray(parts[5]),
+                                ExpFix6 = CsvParser.ParseIntArray(parts[6]),
+                                ExpRange1 = CsvParser.ParseIntArray(parts[7]),
+                                TypeCount1 = CsvParser.ParseIntOrDefault(parts[8], 1),
+                                TypeCount2 = CsvParser.ParseIntOrDefault(parts[9], 1),
+                                TypeCount3 = CsvParser.ParseIntOrDefault(parts[10], 1),
+                                TypeCount4 = CsvParser.ParseIntOrDefault(parts[11], 1),
+                                TypeCount5 = CsvParser.ParseIntOrDefault(parts[12], 1),
+                                TypeCount6 = CsvParser.ParseIntOrDefault(parts[13], 1), // 兼容旧版，保持与BatchLevelEvaluatorSimple一致
+                                TypeRange1 = CsvParser.ParseIntOrDefault(parts[14], 1)
                             };
                             _csvConfigs[terrainId] = config;
                         }
@@ -202,6 +227,10 @@ namespace DGuo.Client.TileMatch.Analysis
                 {
                     case 1:
                     case 2:
+                    case 3:
+                    case 4:
+                    case 5:
+                    case 6:
                         // 固定配置：使用特定地形的配置
                         if (!_csvConfigs.TryGetValue(terrainId, out var config))
                         {
@@ -209,7 +238,16 @@ namespace DGuo.Client.TileMatch.Analysis
                             return new int[][] { new int[] { 1, 2, 3 } };
                         }
 
-                        var selectedMode = experienceConfigEnum == 1 ? config.ExpFix1 : config.ExpFix2;
+                        var selectedMode = experienceConfigEnum switch
+                        {
+                            1 => config.ExpFix1,
+                            2 => config.ExpFix2,
+                            3 => config.ExpFix3,
+                            4 => config.ExpFix4,
+                            5 => config.ExpFix5,
+                            6 => config.ExpFix6,
+                            _ => config.ExpFix1
+                        };
                         return new int[][] { selectedMode };
 
                     case -1:
@@ -237,6 +275,10 @@ namespace DGuo.Client.TileMatch.Analysis
                 {
                     case 1:
                     case 2:
+                    case 3:
+                    case 4:
+                    case 5:
+                    case 6:
                         // 固定配置：使用特定地形的配置
                         if (!_csvConfigs.TryGetValue(terrainId, out var config))
                         {
@@ -244,7 +286,16 @@ namespace DGuo.Client.TileMatch.Analysis
                             return new int[] { 7 };
                         }
 
-                        var selectedCount = colorCountConfigEnum == 1 ? config.TypeCount1 : config.TypeCount2;
+                        var selectedCount = colorCountConfigEnum switch
+                        {
+                            1 => config.TypeCount1,
+                            2 => config.TypeCount2,
+                            3 => config.TypeCount3,
+                            4 => config.TypeCount4,
+                            5 => config.TypeCount5,
+                            6 => config.TypeCount6,
+                            _ => config.TypeCount1
+                        };
                         return new int[] { selectedCount };
 
                     case -1:
@@ -515,11 +566,15 @@ namespace DGuo.Client.TileMatch.Analysis
                 analysisStopwatch.Stop();
                 analysisTimeMs += (int)analysisStopwatch.ElapsedMilliseconds;
 
-                // 在第一次循环时计算游戏开局的最小cost值
+                // 在第一次循环时计算游戏开局的最小cost值和初始压力值
                 if (moveCount == 0)
                 {
                     var (initialMinCost, _) = CalculateMinCostAndOptionsFromExisting(virtualAnalyzer);
                     result.InitialMinCost = initialMinCost;
+
+                    // 计算开局压力值：剩余格子数量=7，消除最小所需格子数量=initialMinCost
+                    int initialPressure = CalculatePressureValue(7, initialMinCost);
+                    result.PressureValues.Add(initialPressure);
                 }
 
                 // 3. 获取可点击的瓦片
@@ -593,11 +648,16 @@ namespace DGuo.Client.TileMatch.Analysis
                     // 记录三消后的dock数量
                     result.DockAfterTrioMatch.Add(dockTiles.Count);
 
-                    // 三消完成后，重新分析并记录cost信息
+                    // 三消完成后，重新分析并记录cost信息和压力值
                     virtualAnalyzer.Analyze();
                     var (postTrioCost, postTrioOptions) = CalculateMinCostAndOptionsFromExisting(virtualAnalyzer);
                     result.MinCostAfterTrioMatch.Add(postTrioCost);
                     result.MinCostOptionsAfterTrioMatch.Add(postTrioOptions);
+
+                    // 计算三消后的压力值：剩余格子数量=7-当前dock数量，消除最小所需格子数量=postTrioCost
+                    int remainingSlots = 7 - dockTiles.Count;
+                    int postTrioPressure = CalculatePressureValue(remainingSlots, postTrioCost);
+                    result.PressureValues.Add(postTrioPressure);
                 }
 
                 // 9. 检查死亡条件
@@ -664,6 +724,33 @@ namespace DGuo.Client.TileMatch.Analysis
             }
 
             return safeCount;
+        }
+
+        /// <summary>
+        /// 计算压力值：基于剩余格子数量和消除最小所需格子数量的映射表
+        /// </summary>
+        private static int CalculatePressureValue(int remainingSlots, int minCost)
+        {
+            // 压力值映射表 - 硬编码对应关系
+            var pressureMap = new Dictionary<(int, int), int>
+            {
+                {(7, 3), 1}, {(7, 4), 1}, {(7, 5), 3}, {(7, 6), 4}, {(7, 7), 5},
+                {(6, 2), 1}, {(6, 3), 1}, {(6, 4), 2}, {(6, 5), 4}, {(6, 6), 5},
+                {(5, 1), 1}, {(5, 2), 1}, {(5, 3), 1}, {(5, 4), 3}, {(5, 5), 5},
+                {(4, 1), 1}, {(4, 2), 1}, {(4, 3), 3}, {(4, 4), 4},
+                {(3, 1), 1}, {(3, 2), 2}, {(3, 3), 3},
+                {(2, 1), 1}, {(2, 2), 3},
+                {(1, 1), 1}
+            };
+
+            // 查找压力值，如果找不到则返回默认值
+            if (pressureMap.TryGetValue((remainingSlots, minCost), out int pressureValue))
+            {
+                return pressureValue;
+            }
+
+            // 对于超出表格范围的情况，返回最高压力值
+            return 5;
         }
 
         /// <summary>
@@ -1188,12 +1275,12 @@ namespace DGuo.Client.TileMatch.Analysis
             {
                 var csv = new StringBuilder();
 
-                // CSV表头 - 添加InitialMinCost字段
+                // CSV表头 - 添加PressureValues字段
                 csv.AppendLine("UniqueId,TerrainId,LevelName,AlgorithmName,ExperienceMode,ColorCount,TotalTiles,RandomSeed," +
                               "GameCompleted,TotalMoves,GameDurationMs,CompletionStatus," +
                               "TotalAnalysisTimeMs,SuccessfulGroups,InitialMinCost," +
                               "DifficultyPosition,TileIdSequence,DockCountPerMove,PeakDockCount,DockAfterTrioMatch,SafeOptionCounts," +
-                              "MinCostAfterTrioMatch,MinCostOptionsAfterTrioMatch,ErrorMessage");
+                              "MinCostAfterTrioMatch,MinCostOptionsAfterTrioMatch,PressureValues,ErrorMessage");
 
                 foreach (var result in results)
                 {
@@ -1204,12 +1291,13 @@ namespace DGuo.Client.TileMatch.Analysis
                     string safeOptions = result.SafeOptionCounts.Count > 0 ? string.Join(",", result.SafeOptionCounts) : "";
                     string minCostAfterTrio = result.MinCostAfterTrioMatch.Count > 0 ? string.Join(",", result.MinCostAfterTrioMatch) : "";
                     string minCostOptionsAfterTrio = result.MinCostOptionsAfterTrioMatch.Count > 0 ? string.Join(",", result.MinCostOptionsAfterTrioMatch) : "";
+                    string pressureValues = result.PressureValues.Count > 0 ? string.Join(",", result.PressureValues) : "";
 
                     csv.AppendLine($"{result.UniqueId},{result.TerrainId},{result.LevelName},{result.AlgorithmName},\"{expMode}\",{result.ColorCount},{result.TotalTiles},{result.RandomSeed}," +
                                   $"{result.GameCompleted},{result.TotalMoves},{result.GameDurationMs},\"{result.CompletionStatus}\"," +
                                   $"{result.TotalAnalysisTimeMs},{result.SuccessfulGroups},{result.InitialMinCost}," +
                                   $"{result.DifficultyPosition:F4},\"{tileSequence}\",\"{dockCounts}\",{result.PeakDockCount},\"{dockAfterTrio}\",\"{safeOptions}\"," +
-                                  $"\"{minCostAfterTrio}\",\"{minCostOptionsAfterTrio}\",\"{result.ErrorMessage ?? ""}\"");
+                                  $"\"{minCostAfterTrio}\",\"{minCostOptionsAfterTrio}\",\"{pressureValues}\",\"{result.ErrorMessage ?? ""}\"");
                 }
 
                 var directory = Path.GetDirectoryName(outputPath);
