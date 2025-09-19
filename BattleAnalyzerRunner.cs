@@ -77,6 +77,12 @@ namespace DGuo.Client.TileMatch.Analysis
             public List<int> MinCostOptionsAfterTrioMatch { get; set; } = new List<int>();
             public List<int> PressureValues { get; set; } = new List<int>(); // 压力值列表：开局+每次三消后
 
+            // 压力值统计字段
+            public double PressureValueMean { get; set; } // 压力值均值
+            public int PressureValueMin { get; set; } // 压力值最小值
+            public int PressureValueMax { get; set; } // 压力值最大值
+            public double PressureValueStdDev { get; set; } // 压力值标准差
+
             public string ErrorMessage { get; set; }
         }
 
@@ -95,8 +101,8 @@ namespace DGuo.Client.TileMatch.Analysis
 
             [Header("=== 随机种子配置 ===")]
             public bool UseFixedSeed = true; // 是否使用固定种子：true=结果可重现，false=完全随机
-            public int FixedSeedValue = 12345678; // 固定种子值（当UseFixedSeed=true时使用）
-            public int RunsPerLevel = 1; // 每个关卡运行次数：用于生成多样化数据
+            public int[] FixedSeedValues = { 12345678, 11111111, 22222222, 33333333, 44444444, 55555555, 66666666, 77777777, 88888888, 99999999 }; // 固定种子值列表
+            public int RunsPerLevel = 10; // 每个关卡运行次数：用于生成多样化数据
 
             [Header("=== 输出配置 ===")]
             public string OutputDirectory = "BattleAnalysisResults";
@@ -108,8 +114,17 @@ namespace DGuo.Client.TileMatch.Analysis
             {
                 if (UseFixedSeed)
                 {
-                    // 固定种子模式：基于关卡和运行索引生成确定性种子
-                    return FixedSeedValue + levelIndex * 1000 + runIndex;
+                    // 固定种子模式：从种子列表中按索引循环取值
+                    if (FixedSeedValues != null && FixedSeedValues.Length > 0)
+                    {
+                        int seedIndex = runIndex % FixedSeedValues.Length;
+                        return FixedSeedValues[seedIndex];
+                    }
+                    else
+                    {
+                        // 兼容性：如果种子列表为空，使用默认种子
+                        return 12345678 + levelIndex * 1000 + runIndex;
+                    }
                 }
                 else
                 {
@@ -149,7 +164,7 @@ namespace DGuo.Client.TileMatch.Analysis
                     _ => $"配置{ColorCountConfigEnum}"
                 };
 
-                string seedMode = UseFixedSeed ? $"固定种子({FixedSeedValue})" : "随机种子";
+                string seedMode = UseFixedSeed ? $"固定种子列表({FixedSeedValues?.Length ?? 0}个)" : "随机种子";
                 return $"体验模式[{expMode}], 花色数量[{colorMode}], {seedMode}, 每关卡{RunsPerLevel}次";
             }
         }
@@ -685,6 +700,9 @@ namespace DGuo.Client.TileMatch.Analysis
             // 计算难点位置
             result.DifficultyPosition = CalculateDifficultyPosition(result.DockCountPerMove, peakDockCount);
 
+            // 计算压力值统计信息
+            CalculatePressureStatistics(result);
+
             if (string.IsNullOrEmpty(result.CompletionStatus))
             {
                 result.CompletionStatus = "Incomplete";
@@ -751,6 +769,37 @@ namespace DGuo.Client.TileMatch.Analysis
 
             // 对于超出表格范围的情况，返回最高压力值
             return 5;
+        }
+
+        /// <summary>
+        /// 计算压力值统计信息：均值、最小值、最大值、标准差（去掉最后一个值）
+        /// </summary>
+        private static void CalculatePressureStatistics(AnalysisResult result)
+        {
+            // 使用去掉最后一个值的压力值列表进行统计计算
+            var validPressureValues = result.PressureValues.Count > 1
+                ? result.PressureValues.Take(result.PressureValues.Count - 1).ToList()
+                : new List<int>();
+
+            if (validPressureValues.Count == 0)
+            {
+                result.PressureValueMean = 0.0;
+                result.PressureValueMin = 0;
+                result.PressureValueMax = 0;
+                result.PressureValueStdDev = 0.0;
+                return;
+            }
+
+            // 计算均值
+            result.PressureValueMean = validPressureValues.Average();
+
+            // 计算最小值和最大值
+            result.PressureValueMin = validPressureValues.Min();
+            result.PressureValueMax = validPressureValues.Max();
+
+            // 计算标准差
+            double variance = validPressureValues.Select(x => Math.Pow(x - result.PressureValueMean, 2)).Average();
+            result.PressureValueStdDev = Math.Sqrt(variance);
         }
 
         /// <summary>
@@ -1205,8 +1254,10 @@ namespace DGuo.Client.TileMatch.Analysis
             // 应用种子配置
             if (config.UseFixedSeed)
             {
-                UnityEngine.Random.InitState(config.FixedSeedValue);
-                Debug.Log($"使用固定随机种子: {config.FixedSeedValue} (确保结果可重现)");
+                var seedList = config.FixedSeedValues != null && config.FixedSeedValues.Length > 0
+                    ? string.Join(",", config.FixedSeedValues)
+                    : "默认种子";
+                Debug.Log($"使用固定随机种子列表: [{seedList}] (确保结果可重现)");
             }
             else
             {
@@ -1275,12 +1326,13 @@ namespace DGuo.Client.TileMatch.Analysis
             {
                 var csv = new StringBuilder();
 
-                // CSV表头 - 添加PressureValues字段
+                // CSV表头 - 添加压力值统计字段
                 csv.AppendLine("UniqueId,TerrainId,LevelName,AlgorithmName,ExperienceMode,ColorCount,TotalTiles,RandomSeed," +
                               "GameCompleted,TotalMoves,GameDurationMs,CompletionStatus," +
                               "TotalAnalysisTimeMs,SuccessfulGroups,InitialMinCost," +
                               "DifficultyPosition,TileIdSequence,DockCountPerMove,PeakDockCount,DockAfterTrioMatch,SafeOptionCounts," +
-                              "MinCostAfterTrioMatch,MinCostOptionsAfterTrioMatch,PressureValues,ErrorMessage");
+                              "MinCostAfterTrioMatch,MinCostOptionsAfterTrioMatch,PressureValues," +
+                              "PressureValueMean,PressureValueMin,PressureValueMax,PressureValueStdDev,ErrorMessage");
 
                 foreach (var result in results)
                 {
@@ -1291,13 +1343,14 @@ namespace DGuo.Client.TileMatch.Analysis
                     string safeOptions = result.SafeOptionCounts.Count > 0 ? string.Join(",", result.SafeOptionCounts) : "";
                     string minCostAfterTrio = result.MinCostAfterTrioMatch.Count > 0 ? string.Join(",", result.MinCostAfterTrioMatch) : "";
                     string minCostOptionsAfterTrio = result.MinCostOptionsAfterTrioMatch.Count > 0 ? string.Join(",", result.MinCostOptionsAfterTrioMatch) : "";
-                    string pressureValues = result.PressureValues.Count > 0 ? string.Join(",", result.PressureValues) : "";
+                    string pressureValues = result.PressureValues.Count > 1 ? string.Join(",", result.PressureValues.Take(result.PressureValues.Count - 1)) : "";
 
                     csv.AppendLine($"{result.UniqueId},{result.TerrainId},{result.LevelName},{result.AlgorithmName},\"{expMode}\",{result.ColorCount},{result.TotalTiles},{result.RandomSeed}," +
                                   $"{result.GameCompleted},{result.TotalMoves},{result.GameDurationMs},\"{result.CompletionStatus}\"," +
                                   $"{result.TotalAnalysisTimeMs},{result.SuccessfulGroups},{result.InitialMinCost}," +
                                   $"{result.DifficultyPosition:F4},\"{tileSequence}\",\"{dockCounts}\",{result.PeakDockCount},\"{dockAfterTrio}\",\"{safeOptions}\"," +
-                                  $"\"{minCostAfterTrio}\",\"{minCostOptionsAfterTrio}\",\"{pressureValues}\",\"{result.ErrorMessage ?? ""}\"");
+                                  $"\"{minCostAfterTrio}\",\"{minCostOptionsAfterTrio}\",\"{pressureValues}\"," +
+                                  $"{result.PressureValueMean:F4},{result.PressureValueMin},{result.PressureValueMax},{result.PressureValueStdDev:F4},\"{result.ErrorMessage ?? ""}\"");
                 }
 
                 var directory = Path.GetDirectoryName(outputPath);
@@ -1332,7 +1385,7 @@ namespace DGuo.Client.TileMatch.Analysis
             var results = RunBatchAnalysis(config);
 
             var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
-            string seedSuffix = config.UseFixedSeed ? $"_Fixed{config.FixedSeedValue}" : "_Random";
+            string seedSuffix = config.UseFixedSeed ? $"_FixedSeeds" : "_Random";
             var csvPath = Path.Combine(config.OutputDirectory, $"BattleAnalysis{seedSuffix}_{timestamp}.csv");
 
             ExportToCsv(results, csvPath);
