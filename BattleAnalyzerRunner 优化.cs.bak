@@ -82,7 +82,6 @@ namespace DGuo.Client.TileMatch.Analysis
             public int PressureValueMin { get; set; } // 压力值最小值
             public int PressureValueMax { get; set; } // 压力值最大值
             public double PressureValueStdDev { get; set; } // 压力值标准差
-            public int FinalDifficulty { get; set; } // 最终难度：1-5
 
             public string ErrorMessage { get; set; }
         }
@@ -95,7 +94,7 @@ namespace DGuo.Client.TileMatch.Analysis
         {
             [Header("=== CSV配置选择器 ===")]
             public int ExperienceConfigEnum = 1; // 体验模式枚举：1=exp-fix-1, 2=exp-fix-2, -1=exp-range-1所有配置
-            public int ColorCountConfigEnum = -2; // 花色数量枚举：1=type-count-1, 2=type-count-2, -1=type-range-1所有配置
+            public int ColorCountConfigEnum = 1; // 花色数量枚举：1=type-count-1, 2=type-count-2, -1=type-range-1所有配置
 
             [Header("=== 测试参数 ===")]
             public int TestLevelCount = 50; // 测试关卡数量
@@ -161,7 +160,7 @@ namespace DGuo.Client.TileMatch.Analysis
                     5 => "TypeCount5",
                     6 => "TypeCount6",
                     -1 => "所有TypeRange1配置",
-                    -2 => "动态花色范围(总tile数/3的40%-80%)",
+                    -2 => "所有TypeRange2配置",
                     _ => $"配置{ColorCountConfigEnum}"
                 };
 
@@ -294,7 +293,7 @@ namespace DGuo.Client.TileMatch.Analysis
             }
 
             /// <summary>
-            /// 根据枚举配置解析花色数量数组 - 支持-1全配置模式，-2动态范围模式
+            /// 根据枚举配置解析花色数量数组 - 支持-1全配置模式
             /// </summary>
             public static int[] ResolveColorCounts(int colorCountConfigEnum, int terrainId)
             {
@@ -332,8 +331,8 @@ namespace DGuo.Client.TileMatch.Analysis
                         return GetAllTypeRange1Configurations();
 
                     case -2:
-                        // 动态范围配置：基于总tile数/3的40%-80%范围遍历
-                        return GenerateDynamicColorRange(terrainId);
+                        // 所有TypeRange2配置：暂未定义，返回所有TypeRange1
+                        return GetAllTypeRange1Configurations();
 
                     default:
                         Debug.LogWarning($"不支持的花色配置枚举: {colorCountConfigEnum}，使用默认值");
@@ -370,54 +369,6 @@ namespace DGuo.Client.TileMatch.Analysis
             }
 
             private static int[] _cachedTypeRange1Configs;
-
-            /// <summary>
-            /// 生成基于总tile数的动态花色范围：总tile数/3的40%-80%，向下取整
-            /// </summary>
-            /// <param name="terrainId">地形ID</param>
-            /// <returns>动态花色数量范围数组</returns>
-            private static int[] GenerateDynamicColorRange(int terrainId)
-            {
-                try
-                {
-                    // 加载关卡数据获取总tile数
-                    string levelName = $"Level_{terrainId:D3}";
-                    var levelData = LoadLevelData(levelName);
-                    if (levelData == null)
-                    {
-                        Debug.LogWarning($"无法加载关卡 {levelName} 数据，使用默认范围");
-                        return new int[] { 5, 6, 7, 8, 9, 10, 11, 12 }; // 默认范围
-                    }
-
-                    int totalTiles = CalculateTotalTileCount(levelData);
-                    int totalGroups = totalTiles / 3; // 总组数
-
-                    // 计算40%-80%范围，向下取整
-                    int minColorCount = Mathf.FloorToInt(totalGroups * 0.4f);
-                    int maxColorCount = Mathf.FloorToInt(totalGroups * 0.8f);
-
-                    // 保证最小值至少为1
-                    minColorCount = Math.Max(1, minColorCount);
-                    maxColorCount = Math.Max(minColorCount, maxColorCount);
-
-                    // 生成范围数组
-                    var result = new List<int>();
-                    for (int i = minColorCount; i <= maxColorCount; i++)
-                    {
-                        result.Add(i);
-                    }
-
-                    Debug.Log($"地形{terrainId}动态花色范围: 总tiles={totalTiles}, 总组数={totalGroups}, " +
-                             $"花色范围=[{minColorCount}-{maxColorCount}] ({result.Count}个配置)");
-
-                    return result.ToArray();
-                }
-                catch (Exception ex)
-                {
-                    Debug.LogError($"生成动态花色范围失败 (地形{terrainId}): {ex.Message}");
-                    return new int[] { 7 }; // 失败时返回默认值
-                }
-            }
 
             /// <summary>
             /// 获取type-range-1列中所有不重复的花色数量 - 使用缓存优化
@@ -499,27 +450,42 @@ namespace DGuo.Client.TileMatch.Analysis
             }
 
             /// <summary>
-            /// 解析整数数组字符串，支持多种格式 - 保持原始逻辑确保一致性
+            /// 解析整数数组字符串，支持多种格式 - 优化版本
             /// </summary>
             public static int[] ParseIntArray(string arrayStr)
             {
+                if (string.IsNullOrEmpty(arrayStr))
+                    return new int[] { 1, 2, 3 };
+
                 try
                 {
+                    arrayStr = arrayStr.Trim();
+                    if (arrayStr.Length == 0)
+                        return new int[] { 1, 2, 3 };
+
+                    // 移除包围符号
+                    if (arrayStr.Length > 1)
+                    {
+                        char first = arrayStr[0];
+                        char last = arrayStr[arrayStr.Length - 1];
+                        if ((first == '[' && last == ']') || (first == '(' && last == ')') || (first == '{' && last == '}'))
+                        {
+                            arrayStr = arrayStr.Substring(1, arrayStr.Length - 2).Trim();
+                        }
+                    }
+
                     if (string.IsNullOrEmpty(arrayStr))
                         return new int[] { 1, 2, 3 };
 
-                    arrayStr = arrayStr.Trim().Trim('[', ']', '(', ')', '{', '}');
-
-                    if (string.IsNullOrEmpty(arrayStr))
-                        return new int[] { 1, 2, 3 };
-
+                    // 单个数值处理
                     if (int.TryParse(arrayStr, out int singleValue))
                     {
                         return new int[] { singleValue, singleValue, singleValue };
                     }
 
+                    // 分割并解析多个数值
                     var parts = arrayStr.Split(new char[] { ',', ' ', ';', '\t' }, StringSplitOptions.RemoveEmptyEntries);
-                    var result = new List<int>();
+                    var result = new List<int>(parts.Length);
 
                     foreach (var part in parts)
                     {
@@ -529,14 +495,13 @@ namespace DGuo.Client.TileMatch.Analysis
                         }
                     }
 
-                    if (result.Count == 0)
-                        return new int[] { 1, 2, 3 };
-                    else if (result.Count == 1)
-                        return new int[] { result[0], result[0], result[0] };
-                    else if (result.Count == 2)
-                        return new int[] { result[0], result[1], result[1] };
-                    else
-                        return result.Take(3).ToArray();
+                    return result.Count switch
+                    {
+                        0 => new int[] { 1, 2, 3 },
+                        1 => new int[] { result[0], result[0], result[0] },
+                        2 => new int[] { result[0], result[1], result[1] },
+                        _ => result.Take(3).ToArray()
+                    };
                 }
                 catch
                 {
@@ -861,7 +826,6 @@ namespace DGuo.Client.TileMatch.Analysis
                 result.PressureValueMin = 0;
                 result.PressureValueMax = 0;
                 result.PressureValueStdDev = 0.0;
-                result.FinalDifficulty = 1; // 默认难度1
                 return;
             }
 
@@ -875,25 +839,6 @@ namespace DGuo.Client.TileMatch.Analysis
             // 计算标准差
             double variance = validPressureValues.Select(x => Math.Pow(x - result.PressureValueMean, 2)).Average();
             result.PressureValueStdDev = Math.Sqrt(variance);
-
-            // 计算最终难度
-            result.FinalDifficulty = CalculateFinalDifficulty(result.PressureValueMean, result.PressureValueStdDev);
-        }
-
-        /// <summary>
-        /// 计算最终难度：基于压力值均值和标准差
-        /// 计算公式：0.6 * (压力值均值 / 5) + 0.4 * (压力值标准差 / 2)
-        /// 难度标准：1(0.1-0.15), 2(0.16-0.2), 3(0.21-0.25), 4(0.26-0.3), 5(0.3+)
-        /// </summary>
-        private static int CalculateFinalDifficulty(double pressureMean, double pressureStdDev)
-        {
-            double difficultyScore = 0.6 * (pressureMean / 5.0) + 0.4 * (pressureStdDev / 2.0);
-
-            if (difficultyScore <= 0.15) return 1;
-            if (difficultyScore <= 0.20) return 2;
-            if (difficultyScore <= 0.25) return 3;
-            if (difficultyScore <= 0.30) return 4;
-            return 5;
         }
 
         /// <summary>
@@ -1347,7 +1292,7 @@ namespace DGuo.Client.TileMatch.Analysis
         }
 
         /// <summary>
-        /// 创建可用花色列表 - 使用原始Fisher-Yates算法保持结果一致性
+        /// 创建可用花色列表 - 优化洗牌算法并增加缓存
         /// </summary>
         private static List<int> CreateAvailableColors(int colorCount)
         {
@@ -1362,11 +1307,11 @@ namespace DGuo.Client.TileMatch.Analysis
             List<int> result;
             if (colorCount <= standardColors.Length)
             {
-                // 使用原始Fisher-Yates洗牌算法（正向遍历）保持结果一致性
+                // Fisher-Yates洗牌算法优化
                 var shuffled = new List<int>(standardColors);
-                for (int i = 0; i < shuffled.Count; i++)
+                for (int i = shuffled.Count - 1; i > 0; i--)
                 {
-                    int randomIndex = UnityEngine.Random.Range(i, shuffled.Count);
+                    int randomIndex = UnityEngine.Random.Range(0, i + 1);
                     (shuffled[i], shuffled[randomIndex]) = (shuffled[randomIndex], shuffled[i]);
                 }
                 result = shuffled.GetRange(0, colorCount);
@@ -1480,7 +1425,7 @@ namespace DGuo.Client.TileMatch.Analysis
                               "TotalAnalysisTimeMs,SuccessfulGroups,InitialMinCost," +
                               "DifficultyPosition,TileIdSequence,DockCountPerMove,PeakDockCount,DockAfterTrioMatch,SafeOptionCounts," +
                               "MinCostAfterTrioMatch,MinCostOptionsAfterTrioMatch,PressureValues," +
-                              "PressureValueMean,PressureValueMin,PressureValueMax,PressureValueStdDev,FinalDifficulty,ErrorMessage");
+                              "PressureValueMean,PressureValueMin,PressureValueMax,PressureValueStdDev,ErrorMessage");
 
                 foreach (var result in results)
                 {
@@ -1498,7 +1443,7 @@ namespace DGuo.Client.TileMatch.Analysis
                                   $"{result.TotalAnalysisTimeMs},{result.SuccessfulGroups},{result.InitialMinCost}," +
                                   $"{result.DifficultyPosition:F4},\"{tileSequence}\",\"{dockCounts}\",{result.PeakDockCount},\"{dockAfterTrio}\",\"{safeOptions}\"," +
                                   $"\"{minCostAfterTrio}\",\"{minCostOptionsAfterTrio}\",\"{pressureValues}\"," +
-                                  $"{result.PressureValueMean:F4},{result.PressureValueMin},{result.PressureValueMax},{result.PressureValueStdDev:F4},{result.FinalDifficulty},\"{result.ErrorMessage ?? ""}\"");
+                                  $"{result.PressureValueMean:F4},{result.PressureValueMin},{result.PressureValueMax},{result.PressureValueStdDev:F4},\"{result.ErrorMessage ?? ""}\"");
                 }
 
                 var directory = Path.GetDirectoryName(outputPath);
