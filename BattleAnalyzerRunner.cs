@@ -82,6 +82,7 @@ namespace DGuo.Client.TileMatch.Analysis
             public int PressureValueMin { get; set; } // 压力值最小值
             public int PressureValueMax { get; set; } // 压力值最大值
             public double PressureValueStdDev { get; set; } // 压力值标准差
+            public double DifficultyScore { get; set; } // 难度分数：(0.5*均值/5+0.3*标准差/2+0.2*最大值/5)*500
             public int FinalDifficulty { get; set; } // 最终难度：1-5
 
             public string ErrorMessage { get; set; }
@@ -94,16 +95,21 @@ namespace DGuo.Client.TileMatch.Analysis
         public class RunConfig
         {
             [Header("=== CSV配置选择器 ===")]
-            public int ExperienceConfigEnum = 1; // 体验模式枚举：1=exp-fix-1, 2=exp-fix-2, -1=exp-range-1所有配置
+            public int ExperienceConfigEnum = -2; // 体验模式枚举：1=exp-fix-1, 2=exp-fix-2, -1=exp-range-1所有配置, -2=数组排列组合
             public int ColorCountConfigEnum = -2; // 花色数量枚举：1=type-count-1, 2=type-count-2, -1=type-range-1所有配置
 
             [Header("=== 测试参数 ===")]
-            public int TestLevelCount = 50; // 测试关卡数量
+            public int TestLevelCount = 1; // 测试关卡数量
+
+            [Header("=== 排列组合配置 (ExperienceConfigEnum = -2时生效) ===")]
+            public int ArrayLength = 3; // 数组长度
+            public int MinValue = 1; // 最小值
+            public int MaxValue = 9; // 最大值
 
             [Header("=== 随机种子配置 ===")]
             public bool UseFixedSeed = true; // 是否使用固定种子：true=结果可重现，false=完全随机
             public int[] FixedSeedValues = { 12345678, 11111111, 22222222, 33333333, 44444444, 55555555, 66666666, 77777777, 88888888, 99999999 }; // 固定种子值列表
-            public int RunsPerLevel = 1; // 每个关卡运行次数：用于生成多样化数据
+            public int RunsPerLevel = 10; // 每个关卡运行次数：用于生成多样化数据
 
             [Header("=== 输出配置 ===")]
             public string OutputDirectory = "BattleAnalysisResults";
@@ -148,7 +154,7 @@ namespace DGuo.Client.TileMatch.Analysis
                     5 => "ExpFix5",
                     6 => "ExpFix6",
                     -1 => "所有ExpRange1配置",
-                    -2 => "所有ExpRange2配置",
+                    -2 => $"排列组合[{MinValue}-{MaxValue}]^{ArrayLength}",
                     _ => $"配置{ExperienceConfigEnum}"
                 };
 
@@ -195,7 +201,7 @@ namespace DGuo.Client.TileMatch.Analysis
 
                     try
                     {
-                        string csvPath = Path.Combine(Application.dataPath, "_Editor/all_level.csv");
+                        string csvPath = Path.Combine(Application.dataPath, "验证器/Editor/all_level.csv");
                         if (!File.Exists(csvPath))
                         {
                             Debug.LogError($"CSV配置文件不存在: {csvPath}");
@@ -246,7 +252,7 @@ namespace DGuo.Client.TileMatch.Analysis
             }
 
             /// <summary>
-            /// 根据枚举配置解析体验模式数组 - 支持-1全配置模式
+            /// 根据枚举配置解析体验模式数组 - 支持-1全配置模式和-2排列组合模式
             /// </summary>
             public static int[][] ResolveExperienceModes(int experienceConfigEnum, int terrainId)
             {
@@ -284,13 +290,61 @@ namespace DGuo.Client.TileMatch.Analysis
                         return GetAllExpRange1Configurations();
 
                     case -2:
-                        // 所有ExpRange2配置：暂未定义，返回所有ExpRange1
-                        return GetAllExpRange1Configurations();
+                        // 排列组合配置：需要通过参数传递配置信息
+                        Debug.LogWarning("ExperienceConfigEnum = -2 需要通过ResolveExperienceModesWithConfig方法使用");
+                        return new int[][] { new int[] { 1, 2, 3 } };
 
                     default:
                         Debug.LogWarning($"不支持的体验配置枚举: {experienceConfigEnum}，使用默认值");
                         return new int[][] { new int[] { 1, 2, 3 } };
                 }
+            }
+
+            /// <summary>
+            /// 根据枚举配置和运行配置解析体验模式数组 - 支持-2排列组合模式
+            /// </summary>
+            public static int[][] ResolveExperienceModesWithConfig(int experienceConfigEnum, int terrainId, RunConfig runConfig)
+            {
+                if (experienceConfigEnum == -2)
+                {
+                    // 排列组合配置：生成从MinValue到MaxValue的所有长度为ArrayLength的排列组合
+                    return GeneratePermutations(runConfig.ArrayLength, runConfig.MinValue, runConfig.MaxValue);
+                }
+
+                // 其他情况使用原有逻辑
+                return ResolveExperienceModes(experienceConfigEnum, terrainId);
+            }
+
+            /// <summary>
+            /// 生成排列组合：从minValue到maxValue的所有长度为arrayLength的组合
+            /// 例如：从1,1,1,1到5,5,5,5
+            /// </summary>
+            private static int[][] GeneratePermutations(int arrayLength, int minValue, int maxValue)
+            {
+                // 计算总排列数：(maxValue - minValue + 1) ^ arrayLength
+                int valueRange = maxValue - minValue + 1;
+                int totalPermutations = (int)Math.Pow(valueRange, arrayLength);
+
+                var permutations = new List<int[]>();
+
+                // 生成所有排列组合
+                for (int i = 0; i < totalPermutations; i++)
+                {
+                    var permutation = new int[arrayLength];
+                    int temp = i;
+
+                    // 将数字i转换为指定进制下的数组表示
+                    for (int pos = 0; pos < arrayLength; pos++)
+                    {
+                        permutation[pos] = minValue + (temp % valueRange);
+                        temp /= valueRange;
+                    }
+
+                    permutations.Add(permutation);
+                }
+
+                Debug.Log($"生成排列组合: 长度={arrayLength}, 范围=[{minValue}-{maxValue}], 总数={permutations.Count}");
+                return permutations.ToArray();
             }
 
             /// <summary>
@@ -381,11 +435,10 @@ namespace DGuo.Client.TileMatch.Analysis
                 try
                 {
                     // 加载关卡数据获取总tile数
-                    string levelName = $"Level_{terrainId:D3}";
-                    var levelData = LoadLevelData(levelName);
+                    var levelData = LoadLevelData(terrainId.ToString());
                     if (levelData == null)
                     {
-                        Debug.LogWarning($"无法加载关卡 {levelName} 数据，使用默认范围");
+                        Debug.LogWarning($"无法加载关卡 {terrainId} 数据，使用默认范围");
                         return new int[] { 5, 6, 7, 8, 9, 10, 11, 12 }; // 默认范围
                     }
 
@@ -536,7 +589,7 @@ namespace DGuo.Client.TileMatch.Analysis
                     else if (result.Count == 2)
                         return new int[] { result[0], result[1], result[1] };
                     else
-                        return result.Take(3).ToArray();
+                        return result.ToArray(); // 支持任意长度，不再强制截断为3个元素
                 }
                 catch
                 {
@@ -551,6 +604,101 @@ namespace DGuo.Client.TileMatch.Analysis
             {
                 return string.IsNullOrEmpty(str) || !int.TryParse(str.Trim(), out int result) ? defaultValue : result;
             }
+        }
+
+        /// <summary>
+        /// 游戏内单关卡压力分析 - 简化接口，专注Pressure结果日志输出
+        /// </summary>
+        /// <param name="terrainId">地形ID (1-200)</param>
+        /// <param name="experienceMode">体验配置数组，如[1,2,3]</param>
+        /// <param name="colorCount">花色数量</param>
+        /// <param name="randomSeed">随机种子(当runCount!=1时无视此参数)</param>
+        /// <param name="runCount">运行次数，默认1次，当>1时使用随机种子多次运行求均值</param>
+        public static void AnalyzeSingleLevelPressure(int terrainId, int[] experienceMode, int colorCount, int randomSeed, int runCount = 1)
+        {
+
+            Debug.Log($"=== 开始关卡压力分析 ===");
+            Debug.Log($"地形ID: {terrainId}, 体验配置: [{string.Join(",", experienceMode)}], 花色数量: {colorCount}");
+
+            if (runCount == 1)
+            {
+                Debug.Log($"单次运行，随机种子: {randomSeed}");
+
+                var result = RunSingleLevelAnalysis(terrainId.ToString(), experienceMode, colorCount, randomSeed);
+
+                if (!string.IsNullOrEmpty(result.ErrorMessage))
+                {
+                    Debug.LogError($"分析失败: {result.ErrorMessage}");
+                    return;
+                }
+
+                // 输出单次运行的压力相关核心指标
+                Debug.Log($"=== 压力分析结果 ===");
+                Debug.Log($"游戏状态: {(result.GameCompleted ? "通关成功" : "未通关")} ({result.CompletionStatus})");
+                Debug.Log($"总步数: {result.TotalMoves}, 成功消除组数: {result.SuccessfulGroups}");
+                Debug.Log($"峰值Dock数量: {result.PeakDockCount}, 开局最小Cost: {result.InitialMinCost}");
+                Debug.Log($"压力值序列: [{string.Join(", ", result.PressureValues)}]");
+                Debug.Log($"压力统计 - 均值: {result.PressureValueMean:F2}, 最小值: {result.PressureValueMin}, 最大值: {result.PressureValueMax}");
+                Debug.Log($"压力标准差: {result.PressureValueStdDev:F2}, 难度分数: {result.DifficultyScore:F2}, 最终难度: {result.FinalDifficulty}/5");
+                Debug.Log($"难点位置: {result.DifficultyPosition:F2} (0=开局, 1=结尾)");
+            }
+            else
+            {
+                Debug.Log($"多次运行模式: {runCount}次，使用随机种子");
+
+                var validResults = new List<AnalysisResult>();
+                var usedSeeds = new List<int>();
+
+                // 进行多次运行
+                for (int i = 0; i < runCount; i++)
+                {
+                    int currentSeed = UnityEngine.Random.Range(1, int.MaxValue);
+                    usedSeeds.Add(currentSeed);
+
+                    var result = RunSingleLevelAnalysis(terrainId.ToString(), experienceMode, colorCount, currentSeed);
+
+                    if (string.IsNullOrEmpty(result.ErrorMessage))
+                    {
+                        validResults.Add(result);
+                    }
+                    else
+                    {
+                        Debug.LogWarning($"第{i+1}次运行失败(种子{currentSeed}): {result.ErrorMessage}");
+                    }
+                }
+
+                if (validResults.Count == 0)
+                {
+                    Debug.LogError($"所有{runCount}次运行均失败！");
+                    return;
+                }
+
+                // 计算均值统计
+                var completedCount = validResults.Count(r => r.GameCompleted);
+                var avgTotalMoves = validResults.Average(r => r.TotalMoves);
+                var avgSuccessfulGroups = validResults.Average(r => r.SuccessfulGroups);
+                var avgPeakDockCount = validResults.Average(r => r.PeakDockCount);
+                var avgInitialMinCost = validResults.Average(r => r.InitialMinCost);
+                var avgPressureValueMean = validResults.Average(r => r.PressureValueMean);
+                var avgPressureValueMin = validResults.Average(r => r.PressureValueMin);
+                var avgPressureValueMax = validResults.Average(r => r.PressureValueMax);
+                var avgPressureValueStdDev = validResults.Average(r => r.PressureValueStdDev);
+                var avgDifficultyScore = validResults.Average(r => r.DifficultyScore);
+                var avgFinalDifficulty = validResults.Average(r => r.FinalDifficulty);
+                var avgDifficultyPosition = validResults.Average(r => r.DifficultyPosition);
+
+                // 输出多次运行的均值结果
+                Debug.Log($"=== 压力分析结果(均值) ===");
+                Debug.Log($"有效运行数: {validResults.Count}/{runCount}, 通关成功率: {(float)completedCount/validResults.Count:P1}");
+                Debug.Log($"使用的随机种子: [{string.Join(",", usedSeeds)}]");
+                Debug.Log($"总步数(均值): {avgTotalMoves:F1}, 成功消除组数(均值): {avgSuccessfulGroups:F1}");
+                Debug.Log($"峰值Dock数量(均值): {avgPeakDockCount:F1}, 开局最小Cost(均值): {avgInitialMinCost:F1}");
+                Debug.Log($"压力统计(均值) - 均值: {avgPressureValueMean:F2}, 最小值: {avgPressureValueMin:F1}, 最大值: {avgPressureValueMax:F1}");
+                Debug.Log($"压力标准差(均值): {avgPressureValueStdDev:F2}, 难度分数(均值): {avgDifficultyScore:F2}, 最终难度(均值): {avgFinalDifficulty:F1}/5");
+                Debug.Log($"难点位置(均值): {avgDifficultyPosition:F2} (0=开局, 1=结尾)");
+            }
+
+            Debug.Log($"=== 分析完成 ===");
         }
 
         /// <summary>
@@ -771,8 +919,9 @@ namespace DGuo.Client.TileMatch.Analysis
             result.PeakDockCount = peakDockCount;
             result.MinMovesToComplete = result.TileIdSequence.Count;
 
-            // 计算难点位置
-            result.DifficultyPosition = CalculateDifficultyPosition(result.DockCountPerMove, peakDockCount);
+            // 计算难点位置：使用DockAfterTrioMatch序列而不是DockCountPerMove
+            int peakDockAfterTrio = result.DockAfterTrioMatch.Count > 0 ? result.DockAfterTrioMatch.Max() : 0;
+            result.DifficultyPosition = CalculateDifficultyPosition(result.DockAfterTrioMatch, peakDockAfterTrio);
 
             // 计算压力值统计信息
             CalculatePressureStatistics(result);
@@ -861,6 +1010,7 @@ namespace DGuo.Client.TileMatch.Analysis
                 result.PressureValueMin = 0;
                 result.PressureValueMax = 0;
                 result.PressureValueStdDev = 0.0;
+                result.DifficultyScore = 0.0; // 默认难度分数0
                 result.FinalDifficulty = 1; // 默认难度1
                 return;
             }
@@ -876,39 +1026,42 @@ namespace DGuo.Client.TileMatch.Analysis
             double variance = validPressureValues.Select(x => Math.Pow(x - result.PressureValueMean, 2)).Average();
             result.PressureValueStdDev = Math.Sqrt(variance);
 
-            // 计算最终难度
-            result.FinalDifficulty = CalculateFinalDifficulty(result.PressureValueMean, result.PressureValueStdDev);
+            // 计算新的难度分数：(0.5*均值/5+0.3*标准差/2+0.2*最大值/5)*500
+            result.DifficultyScore = (0.5 * result.PressureValueMean / 5.0 +
+                                     0.3 * result.PressureValueStdDev / 2.0 +
+                                     0.2 * result.PressureValueMax / 5.0) * 500.0;
+
+            // 基于DifficultyScore计算最终难度等级
+            result.FinalDifficulty = CalculateFinalDifficulty(result.DifficultyScore);
         }
 
         /// <summary>
-        /// 计算最终难度：基于压力值均值和标准差
-        /// 计算公式：0.6 * (压力值均值 / 5) + 0.4 * (压力值标准差 / 2)
-        /// 难度标准：1(0.1-0.15), 2(0.16-0.2), 3(0.21-0.25), 4(0.26-0.3), 5(0.3+)
+        /// 计算最终难度：基于DifficultyScore进行映射转换
+        /// 映射标准：1(0-100), 2(100-200), 3(200-300), 4(300-400), 5(400+)
         /// </summary>
-        private static int CalculateFinalDifficulty(double pressureMean, double pressureStdDev)
+        private static int CalculateFinalDifficulty(double difficultyScore)
         {
-            double difficultyScore = 0.6 * (pressureMean / 5.0) + 0.4 * (pressureStdDev / 2.0);
-
-            if (difficultyScore <= 0.15) return 1;
-            if (difficultyScore <= 0.20) return 2;
-            if (difficultyScore <= 0.25) return 3;
-            if (difficultyScore <= 0.30) return 4;
+            if (difficultyScore < 100) return 1;
+            if (difficultyScore < 200) return 2;
+            if (difficultyScore < 300) return 3;
+            if (difficultyScore < 400) return 4;
             return 5;
         }
 
         /// <summary>
-        /// 计算难点位置：基于peakdock在关卡进度中的位置（0~1）
+        /// 计算难点位置：基于DockAfterTrioMatch序列中峰值的位置（0~1）
+        /// 使用扩大窗口的策略来精确定位真正的难点
         /// </summary>
-        private static double CalculateDifficultyPosition(List<int> dockCountPerMove, int peakDockCount)
+        private static double CalculateDifficultyPosition(List<int> dockAfterTrioMatch, int peakValue)
         {
-            if (dockCountPerMove.Count == 0)
+            if (dockAfterTrioMatch.Count == 0)
                 return 0.0;
 
-            // 找到所有等于peakdock的位置（从0开始的索引）
+            // 找到所有等于峰值的位置（从0开始的索引）
             var peakPositions = new List<int>();
-            for (int i = 0; i < dockCountPerMove.Count; i++)
+            for (int i = 0; i < dockAfterTrioMatch.Count; i++)
             {
-                if (dockCountPerMove[i] == peakDockCount)
+                if (dockAfterTrioMatch[i] == peakValue)
                 {
                     peakPositions.Add(i);
                 }
@@ -920,41 +1073,73 @@ namespace DGuo.Client.TileMatch.Analysis
             // 如果只有一个峰值位置，直接返回
             if (peakPositions.Count == 1)
             {
-                return (double)peakPositions[0] / (dockCountPerMove.Count - 1);
+                return (double)peakPositions[0] / (dockAfterTrioMatch.Count - 1);
             }
 
-            // 多个峰值位置时，比较周围区域的dock均值，选择更高的
-            int bestPosition = peakPositions[0];
-            double bestSurroundingAverage = 0.0;
-
-            foreach (int position in peakPositions)
-            {
-                double surroundingAverage = CalculateSurroundingAverage(dockCountPerMove, position);
-                if (surroundingAverage > bestSurroundingAverage)
-                {
-                    bestSurroundingAverage = surroundingAverage;
-                    bestPosition = position;
-                }
-            }
-
-            return (double)bestPosition / (dockCountPerMove.Count - 1);
+            // 多个峰值位置时，使用扩大窗口策略找到最佳位置
+            return FindBestPositionWithExpandingWindow(dockAfterTrioMatch, peakPositions);
         }
 
         /// <summary>
-        /// 计算指定位置周围区域的dock均值（窗口大小为5）
+        /// 使用扩大窗口策略找到最佳峰值位置
+        /// 逐步扩大窗口直到找到唯一的最高周围均值位置
         /// </summary>
-        private static double CalculateSurroundingAverage(List<int> dockCountPerMove, int centerPosition)
+        private static double FindBestPositionWithExpandingWindow(List<int> dockValues, List<int> peakPositions)
         {
-            int windowSize = 5;
+            // 逐步扩大窗口，从5开始，每次增加2，最大到序列长度
+            for (int windowSize = 5; windowSize <= dockValues.Count; windowSize += 2)
+            {
+                var candidates = new List<(int position, double average)>();
+                double maxAverage = -1;
+
+                // 计算每个峰值位置的周围均值
+                foreach (int position in peakPositions)
+                {
+                    double average = CalculateSurroundingAverage(dockValues, position, windowSize);
+                    if (average > maxAverage)
+                    {
+                        maxAverage = average;
+                        candidates.Clear();
+                        candidates.Add((position, average));
+                    }
+                    else if (Math.Abs(average - maxAverage) < 0.0001) // 相等（考虑浮点精度）
+                    {
+                        candidates.Add((position, average));
+                    }
+                }
+
+                // 如果只有一个候选者，找到了最佳位置
+                if (candidates.Count == 1)
+                {
+                    return (double)candidates[0].position / (dockValues.Count - 1);
+                }
+
+                // 如果窗口已经扩大到最大仍有多个候选者，选择最靠后的位置
+                if (windowSize >= dockValues.Count - 1)
+                {
+                    int bestPosition = candidates.Max(c => c.position);
+                    return (double)bestPosition / (dockValues.Count - 1);
+                }
+            }
+
+            // 兜底：选择最后一个峰值位置
+            return (double)peakPositions.Last() / (dockValues.Count - 1);
+        }
+
+        /// <summary>
+        /// 计算指定位置周围区域的dock均值（支持可变窗口大小）
+        /// </summary>
+        private static double CalculateSurroundingAverage(List<int> dockValues, int centerPosition, int windowSize = 5)
+        {
             int halfWindow = windowSize / 2;
             int startPos = Math.Max(0, centerPosition - halfWindow);
-            int endPos = Math.Min(dockCountPerMove.Count - 1, centerPosition + halfWindow);
+            int endPos = Math.Min(dockValues.Count - 1, centerPosition + halfWindow);
 
             double sum = 0.0;
             int count = 0;
             for (int i = startPos; i <= endPos; i++)
             {
-                sum += dockCountPerMove[i];
+                sum += dockValues[i];
                 count++;
             }
 
@@ -1268,13 +1453,9 @@ namespace DGuo.Client.TileMatch.Analysis
         {
             try
             {
-                // 尝试从 levelName 提取数字ID作为缓存键
+                // 直接解析levelName为数字ID作为缓存键
                 int levelId = 0;
-                if (levelName.StartsWith("Level_"))
-                {
-                    string numberPart = levelName.Substring(6);
-                    int.TryParse(numberPart, out levelId);
-                }
+                int.TryParse(levelName, out levelId);
 
                 // 检查缓存
                 if (levelId > 0 && _levelDataCache.TryGetValue(levelId, out LevelData cachedLevel))
@@ -1282,17 +1463,8 @@ namespace DGuo.Client.TileMatch.Analysis
                     return cachedLevel;
                 }
 
-                string jsonFileName;
-                if (levelName.StartsWith("Level_"))
-                {
-                    string numberPart = levelName.Substring(6);
-                    int levelNumber = int.Parse(numberPart);
-                    jsonFileName = $"{100000 + levelNumber}.json";
-                }
-                else
-                {
-                    jsonFileName = levelName.EndsWith(".json") ? levelName : $"{levelName}.json";
-                }
+                // 直接使用levelName作为JSON文件名
+                string jsonFileName = levelName.EndsWith(".json") ? levelName : $"{levelName}.json";
 
                 string jsonPath = Path.Combine(Application.dataPath, "..", "Tools", "Config", "Json", "Levels", jsonFileName);
                 jsonPath = Path.GetFullPath(jsonPath);
@@ -1412,20 +1584,31 @@ namespace DGuo.Client.TileMatch.Analysis
 
             Debug.Log($"开始批量分析: {config.GetConfigDescription()}");
 
-            // 预计算总任务数 - 优化内存分配
+            // 预计算总任务数 - 从CSV配置中获取真实的terrainId
             int totalTasks = 0;
-            var levelConfigs = new Dictionary<string, (int[][] experienceModes, int[] colorCounts)>(config.TestLevelCount);
+            var levelConfigs = new Dictionary<string, (int[][] experienceModes, int[] colorCounts)>();
 
-            for (int i = 1; i <= config.TestLevelCount; i++)
+            // 从CSV配置中获取所有terrainId，按数量限制
+            if (_csvConfigs == null || _csvConfigs.Count == 0)
             {
-                string levelName = $"Level_{i:D3}";
-                var experienceModes = CsvConfigManager.ResolveExperienceModes(config.ExperienceConfigEnum, i);
-                var colorCounts = CsvConfigManager.ResolveColorCounts(config.ColorCountConfigEnum, i);
+                Debug.LogError("CSV配置加载失败或为空，无法进行批量分析！");
+                return results;
+            }
+
+            var availableTerrainIds = _csvConfigs.Keys.OrderBy(x => x).Take(config.TestLevelCount).ToList();
+            Debug.Log($"CSV配置加载成功，共 {_csvConfigs.Count} 个地形配置");
+
+            foreach (int terrainId in availableTerrainIds)
+            {
+                string levelName = terrainId.ToString();
+                var experienceModes = CsvConfigManager.ResolveExperienceModesWithConfig(config.ExperienceConfigEnum, terrainId, config);
+                var colorCounts = CsvConfigManager.ResolveColorCounts(config.ColorCountConfigEnum, terrainId);
                 levelConfigs[levelName] = (experienceModes, colorCounts);
                 totalTasks += experienceModes.Length * colorCounts.Length * config.RunsPerLevel;
             }
 
-            Debug.Log($"关卡数量: {config.TestLevelCount}, 总任务数: {totalTasks}");
+            Debug.Log($"关卡数量: {availableTerrainIds.Count}, 总任务数: {totalTasks}");
+            Debug.Log($"使用的TerrainId列表: [{string.Join(",", availableTerrainIds)}]");
 
             // 预分配结果列表容量优化
             results.Capacity = totalTasks;
@@ -1436,7 +1619,7 @@ namespace DGuo.Client.TileMatch.Analysis
             {
                 string levelName = kvp.Key;
                 var (experienceModes, colorCounts) = kvp.Value;
-                int terrainId = int.Parse(levelName.Substring(6)); // 提取Level_001中的001
+                int terrainId = int.Parse(levelName); // 直接解析levelName为terrainId
 
                 foreach (var experienceMode in experienceModes)
                 {
@@ -1448,7 +1631,7 @@ namespace DGuo.Client.TileMatch.Analysis
                             int randomSeed = config.GetSeedForRun(terrainId, runIndex);
 
                             completedTasks++;
-                            Debug.Log($"[{completedTasks}/{totalTasks}] 分析关卡 {levelName}: " +
+                            Debug.Log($"[{completedTasks}/{totalTasks}] 分析关卡 {terrainId}: " +
                                      $"体验[{string.Join(",", experienceMode)}], 花色{colorCount}, 种子{randomSeed}");
 
                             var result = RunSingleLevelAnalysis(levelName, experienceMode, colorCount, randomSeed);
@@ -1474,13 +1657,13 @@ namespace DGuo.Client.TileMatch.Analysis
             {
                 var csv = new StringBuilder();
 
-                // CSV表头 - 添加压力值统计字段
+                // CSV表头 - 添加难度分数字段
                 csv.AppendLine("UniqueId,TerrainId,LevelName,AlgorithmName,ExperienceMode,ColorCount,TotalTiles,RandomSeed," +
                               "GameCompleted,TotalMoves,GameDurationMs,CompletionStatus," +
                               "TotalAnalysisTimeMs,SuccessfulGroups,InitialMinCost," +
                               "DifficultyPosition,TileIdSequence,DockCountPerMove,PeakDockCount,DockAfterTrioMatch,SafeOptionCounts," +
                               "MinCostAfterTrioMatch,MinCostOptionsAfterTrioMatch,PressureValues," +
-                              "PressureValueMean,PressureValueMin,PressureValueMax,PressureValueStdDev,FinalDifficulty,ErrorMessage");
+                              "PressureValueMean,PressureValueMin,PressureValueMax,PressureValueStdDev,DifficultyScore,FinalDifficulty,ErrorMessage");
 
                 foreach (var result in results)
                 {
@@ -1498,7 +1681,7 @@ namespace DGuo.Client.TileMatch.Analysis
                                   $"{result.TotalAnalysisTimeMs},{result.SuccessfulGroups},{result.InitialMinCost}," +
                                   $"{result.DifficultyPosition:F4},\"{tileSequence}\",\"{dockCounts}\",{result.PeakDockCount},\"{dockAfterTrio}\",\"{safeOptions}\"," +
                                   $"\"{minCostAfterTrio}\",\"{minCostOptionsAfterTrio}\",\"{pressureValues}\"," +
-                                  $"{result.PressureValueMean:F4},{result.PressureValueMin},{result.PressureValueMax},{result.PressureValueStdDev:F4},{result.FinalDifficulty},\"{result.ErrorMessage ?? ""}\"");
+                                  $"{result.PressureValueMean:F4},{result.PressureValueMin},{result.PressureValueMax},{result.PressureValueStdDev:F4},{result.DifficultyScore:F2},{result.FinalDifficulty},\"{result.ErrorMessage ?? ""}\"");
                 }
 
                 var directory = Path.GetDirectoryName(outputPath);
@@ -1524,7 +1707,7 @@ namespace DGuo.Client.TileMatch.Analysis
         public static void RunBatchAnalysisFromMenu()
         {
             var config = new RunConfig(); // 使用完全默认的配置
-            config.OutputDirectory = Path.Combine(Application.dataPath, "_Editor/BattleAnalysisResults");
+            config.OutputDirectory = Path.Combine(Application.dataPath, "验证器/Editor/BattleAnalysisResults");
 
             Debug.Log($"=== 开始批量分析（默认配置） ===");
             Debug.Log($"配置详情: {config.GetConfigDescription()}");
