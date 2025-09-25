@@ -109,7 +109,7 @@ namespace DGuo.Client.TileMatch.Analysis
             [Header("=== 随机种子配置 ===")]
             public bool UseFixedSeed = true; // 是否使用固定种子：true=结果可重现，false=完全随机
             public int[] FixedSeedValues = { 12345678, 11111111, 22222222, 33333333, 44444444, 55555555, 66666666, 77777777, 88888888, 99999999 }; // 固定种子值列表
-            public int RunsPerLevel = 10; // 每个关卡运行次数：用于生成多样化数据
+            public int RunsPerLevel = 5; // 每个关卡运行次数：用于生成多样化数据
 
             [Header("=== 输出配置 ===")]
             public string OutputDirectory = "BattleAnalysisResults";
@@ -447,7 +447,7 @@ namespace DGuo.Client.TileMatch.Analysis
 
                     // 计算40%-80%范围，向下取整
                     int minColorCount = Mathf.FloorToInt(totalGroups * 0.4f);
-                    int maxColorCount = Mathf.FloorToInt(totalGroups * 0.8f);
+                    int maxColorCount = Mathf.FloorToInt(totalGroups * 1.0f);
 
                     // 保证最小值至少为1
                     minColorCount = Math.Max(1, minColorCount);
@@ -1569,6 +1569,9 @@ namespace DGuo.Client.TileMatch.Analysis
             CsvConfigManager.LoadCsvConfigs();
             var results = new List<AnalysisResult>();
 
+            // 获取标准花色池上限
+            const int maxColorPoolSize = 19;
+
             // 应用种子配置
             if (config.UseFixedSeed)
             {
@@ -1595,7 +1598,37 @@ namespace DGuo.Client.TileMatch.Analysis
                 return results;
             }
 
-            var availableTerrainIds = _csvConfigs.Keys.OrderBy(x => x).Take(config.TestLevelCount).ToList();
+            // 按照CSV文件的行顺序（而不是数值大小）获取terrainId
+            var availableTerrainIds = new List<int>();
+
+            // 重新按CSV文件顺序读取
+            try
+            {
+                string csvPath = Path.Combine(Application.dataPath, "验证器/Editor/all_level.csv");
+                using (var reader = new StreamReader(csvPath, Encoding.UTF8))
+                {
+                    reader.ReadLine(); // 跳过表头
+                    string line;
+                    int count = 0;
+                    while ((line = reader.ReadLine()) != null && count < config.TestLevelCount)
+                    {
+                        var parts = CsvParser.ParseCsvLine(line);
+                        if (parts.Length >= 1 && int.TryParse(parts[0], out int terrainId))
+                        {
+                            if (_csvConfigs.ContainsKey(terrainId))
+                            {
+                                availableTerrainIds.Add(terrainId);
+                                count++;
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"按行顺序读取CSV失败，使用排序后的方式: {ex.Message}");
+                availableTerrainIds = _csvConfigs.Keys.OrderBy(x => x).Take(config.TestLevelCount).ToList();
+            }
             Debug.Log($"CSV配置加载成功，共 {_csvConfigs.Count} 个地形配置");
 
             foreach (int terrainId in availableTerrainIds)
@@ -1613,6 +1646,7 @@ namespace DGuo.Client.TileMatch.Analysis
             // 预分配结果列表容量优化
             results.Capacity = totalTasks;
             int completedTasks = 0;
+            int skippedTasks = 0;
             int uniqueIdCounter = 1; // 唯一ID计数器
 
             foreach (var kvp in levelConfigs)
@@ -1625,13 +1659,21 @@ namespace DGuo.Client.TileMatch.Analysis
                 {
                     foreach (var colorCount in colorCounts)
                     {
+                        // 检查花色数量是否超过花色池上限
+                        if (colorCount > maxColorPoolSize)
+                        {
+                            skippedTasks += config.RunsPerLevel;
+                            Debug.Log($"跳过关卡 {terrainId}: 花色数量({colorCount})超过花色池上限({maxColorPoolSize})");
+                            continue;
+                        }
+
                         // 根据配置生成多次运行
                         for (int runIndex = 0; runIndex < config.RunsPerLevel; runIndex++)
                         {
                             int randomSeed = config.GetSeedForRun(terrainId, runIndex);
 
                             completedTasks++;
-                            Debug.Log($"[{completedTasks}/{totalTasks}] 分析关卡 {terrainId}: " +
+                            Debug.Log($"[{completedTasks}/{totalTasks - skippedTasks}] 分析关卡 {terrainId}: " +
                                      $"体验[{string.Join(",", experienceMode)}], 花色{colorCount}, 种子{randomSeed}");
 
                             var result = RunSingleLevelAnalysis(levelName, experienceMode, colorCount, randomSeed);
@@ -1644,7 +1686,7 @@ namespace DGuo.Client.TileMatch.Analysis
                 }
             }
 
-            Debug.Log($"批量分析完成: {results.Count} 个任务结果");
+            Debug.Log($"批量分析完成: {results.Count} 个任务结果, 跳过 {skippedTasks} 个超限任务");
             return results;
         }
 
