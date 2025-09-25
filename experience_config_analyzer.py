@@ -522,6 +522,351 @@ class ExperienceConfigAnalyzer:
         print("✅ 影响机制分析完成")
         return mechanism_effects
 
+    def value_specific_analysis(self, target_value: int = None) -> Dict:
+        """单一数值深度分析 - 分析特定数值(如x=5)在不同位置的完整影响"""
+        print(f"🎯 执行单一数值深度分析 (目标数值: {target_value or '全部'})...")
+
+        value_effects = {}
+        values_to_analyze = [target_value] if target_value else range(1, 10)
+
+        for value in values_to_analyze:
+            value_key = f"value_{value}"
+            value_data = {}
+
+            for pos in ['pos1', 'pos2', 'pos3']:
+                pos_data = {}
+
+                # 筛选该数值在该位置的数据
+                mask = self.features[pos] == value
+                subset = self.data[mask]
+
+                if len(subset) < 10:  # 样本量太少跳过
+                    continue
+
+                # DifficultyScore影响分析
+                if 'DifficultyScore' in subset.columns:
+                    difficulty_stats = {
+                        'mean': subset['DifficultyScore'].mean(),
+                        'std': subset['DifficultyScore'].std(),
+                        'median': subset['DifficultyScore'].median(),
+                        'min': subset['DifficultyScore'].min(),
+                        'max': subset['DifficultyScore'].max(),
+                        'count': len(subset)
+                    }
+                    pos_data['difficulty_impact'] = difficulty_stats
+
+                # 胜率分析
+                if 'GameCompleted' in subset.columns:
+                    win_rate = (subset['GameCompleted'] == True).mean()
+                    pos_data['win_rate'] = {
+                        'success_rate': win_rate,
+                        'failure_rate': 1 - win_rate,
+                        'total_games': len(subset)
+                    }
+
+                # DockAfterTrioMatch序列分析
+                if 'DockAfterTrioMatch' in subset.columns:
+                    dock_analysis = self._analyze_dock_sequences(subset['DockAfterTrioMatch'])
+                    pos_data['dock_impact'] = dock_analysis
+
+                # PressureValues分析
+                pressure_analysis = {}
+                for pressure_col in ['PressureValueMean', 'PressureValueMax', 'PressureValueStdDev']:
+                    if pressure_col in subset.columns:
+                        pressure_analysis[pressure_col] = {
+                            'mean': subset[pressure_col].mean(),
+                            'std': subset[pressure_col].std(),
+                            'median': subset[pressure_col].median()
+                        }
+                pos_data['pressure_impact'] = pressure_analysis
+
+                value_data[pos] = pos_data
+
+            value_effects[value_key] = value_data
+
+        self.results['value_specific_effects'] = value_effects
+        print("✅ 单一数值深度分析完成")
+        return value_effects
+
+    def _analyze_dock_sequences(self, dock_series) -> Dict:
+        """分析DockAfterTrioMatch序列的辅助方法"""
+        sequences = []
+        for dock_str in dock_series.fillna(''):
+            if dock_str:
+                try:
+                    dock_values = [int(x) for x in str(dock_str).split(',')]
+                    sequences.append(dock_values)
+                except:
+                    continue
+
+        if not sequences:
+            return {}
+
+        # 计算序列统计
+        seq_lengths = [len(seq) for seq in sequences]
+        avg_length = np.mean(seq_lengths)
+
+        # 分析不同阶段的平均Dock值
+        early_vals, middle_vals, late_vals = [], [], []
+        for seq in sequences:
+            if len(seq) >= 6:
+                third = len(seq) // 3
+                early_vals.extend(seq[:third])
+                middle_vals.extend(seq[third:2*third])
+                late_vals.extend(seq[2*third:])
+
+        return {
+            'avg_sequence_length': avg_length,
+            'total_sequences': len(sequences),
+            'phase_analysis': {
+                'early_phase': {'mean': np.mean(early_vals) if early_vals else 0, 'count': len(early_vals)},
+                'middle_phase': {'mean': np.mean(middle_vals) if middle_vals else 0, 'count': len(middle_vals)},
+                'late_phase': {'mean': np.mean(late_vals) if late_vals else 0, 'count': len(late_vals)}
+            }
+        }
+
+    def gradient_effect_analysis(self) -> Dict:
+        """数值梯度效应分析 - 分析1-9数值的连续影响变化"""
+        print("📈 执行数值梯度效应分析...")
+
+        gradient_effects = {}
+
+        for pos in ['pos1', 'pos2', 'pos3']:
+            pos_gradients = {}
+
+            # 主要指标的梯度分析
+            for metric in ['DifficultyScore', 'PeakDockCount', 'PressureValueMean']:
+                if metric in self.data.columns:
+
+                    # 计算每个数值的平均指标值
+                    value_means = []
+                    value_counts = []
+
+                    for value in range(1, 10):
+                        subset = self.data[self.features[pos] == value]
+                        if len(subset) > 0:
+                            value_means.append(subset[metric].mean())
+                            value_counts.append(len(subset))
+                        else:
+                            value_means.append(np.nan)
+                            value_counts.append(0)
+
+                    # 计算梯度(相邻数值间的差值)
+                    gradients = []
+                    for i in range(1, len(value_means)):
+                        if not (np.isnan(value_means[i]) or np.isnan(value_means[i-1])):
+                            gradient = value_means[i] - value_means[i-1]
+                            gradients.append(gradient)
+                        else:
+                            gradients.append(np.nan)
+
+                    # 识别最大梯度变化点(临界点)
+                    abs_gradients = [abs(g) for g in gradients if not np.isnan(g)]
+                    if abs_gradients:
+                        max_gradient_idx = gradients.index(max(gradients, key=abs))
+                        critical_point = max_gradient_idx + 2  # +2因为梯度是差值,对应后一个数值
+                    else:
+                        critical_point = None
+
+                    pos_gradients[metric] = {
+                        'value_means': value_means,
+                        'gradients': gradients,
+                        'critical_point': critical_point,
+                        'max_gradient': max(abs_gradients) if abs_gradients else 0,
+                        'avg_gradient': np.mean([g for g in gradients if not np.isnan(g)]) if gradients else 0
+                    }
+
+            gradient_effects[pos] = pos_gradients
+
+        self.results['gradient_effects'] = gradient_effects
+        print("✅ 数值梯度效应分析完成")
+        return gradient_effects
+
+    def dock_sequence_deep_analysis(self) -> Dict:
+        """DockAfterTrioMatch序列深度分析"""
+        print("🚢 执行Dock序列深度分析...")
+
+        dock_deep_analysis = {}
+
+        # 解析所有序列数据
+        all_sequences = []
+        sequence_metadata = []
+
+        for idx, row in self.data.iterrows():
+            dock_str = row.get('DockAfterTrioMatch', '')
+            if dock_str and str(dock_str) != 'nan':
+                try:
+                    dock_values = [int(x) for x in str(dock_str).split(',')]
+                    all_sequences.append(dock_values)
+                    sequence_metadata.append({
+                        'pos1': self.features.loc[idx, 'pos1'],
+                        'pos2': self.features.loc[idx, 'pos2'],
+                        'pos3': self.features.loc[idx, 'pos3'],
+                        'difficulty': row.get('DifficultyScore', 0),
+                        'completed': row.get('GameCompleted', False)
+                    })
+                except:
+                    continue
+
+        if not all_sequences:
+            return {}
+
+        # 按位置分组分析
+        for pos in ['pos1', 'pos2', 'pos3']:
+            pos_analysis = {}
+
+            for value in range(1, 10):
+                value_sequences = []
+                value_metadata = []
+
+                for i, meta in enumerate(sequence_metadata):
+                    if meta[pos] == value:
+                        value_sequences.append(all_sequences[i])
+                        value_metadata.append(meta)
+
+                if len(value_sequences) < 5:  # 样本量太少
+                    continue
+
+                # 序列长度分析
+                lengths = [len(seq) for seq in value_sequences]
+
+                # 序列模式分析
+                patterns = self._identify_dock_patterns(value_sequences)
+
+                # 危险时刻分析(Dock>=6的时刻)
+                danger_analysis = self._analyze_danger_moments(value_sequences)
+
+                # 成功率与序列特征关系
+                success_rate = np.mean([meta['completed'] for meta in value_metadata])
+
+                pos_analysis[f'value_{value}'] = {
+                    'sequence_count': len(value_sequences),
+                    'avg_length': np.mean(lengths),
+                    'success_rate': success_rate,
+                    'patterns': patterns,
+                    'danger_analysis': danger_analysis
+                }
+
+            dock_deep_analysis[pos] = pos_analysis
+
+        self.results['dock_deep_analysis'] = dock_deep_analysis
+        print("✅ Dock序列深度分析完成")
+        return dock_deep_analysis
+
+    def _identify_dock_patterns(self, sequences) -> Dict:
+        """识别Dock序列模式"""
+        if not sequences:
+            return {}
+
+        # 计算平均序列
+        max_length = max(len(seq) for seq in sequences)
+        avg_sequence = []
+
+        for i in range(max_length):
+            values_at_i = [seq[i] for seq in sequences if len(seq) > i]
+            if values_at_i:
+                avg_sequence.append(np.mean(values_at_i))
+
+        # 识别模式类型
+        if len(avg_sequence) < 3:
+            return {'pattern_type': 'insufficient_data'}
+
+        # 判断趋势
+        early_avg = np.mean(avg_sequence[:len(avg_sequence)//3])
+        late_avg = np.mean(avg_sequence[2*len(avg_sequence)//3:])
+
+        if late_avg > early_avg + 0.5:
+            pattern_type = 'increasing_pressure'
+        elif late_avg < early_avg - 0.5:
+            pattern_type = 'decreasing_pressure'
+        else:
+            pattern_type = 'stable_pressure'
+
+        return {
+            'pattern_type': pattern_type,
+            'avg_sequence': avg_sequence[:10],  # 只保存前10个点
+            'early_avg': early_avg,
+            'late_avg': late_avg
+        }
+
+    def _analyze_danger_moments(self, sequences) -> Dict:
+        """分析危险时刻(Dock>=6)"""
+        if not sequences:
+            return {}
+
+        danger_counts = []
+        max_danger_levels = []
+
+        for seq in sequences:
+            danger_count = sum(1 for val in seq if val >= 6)
+            max_danger = max(seq) if seq else 0
+
+            danger_counts.append(danger_count)
+            max_danger_levels.append(max_danger)
+
+        return {
+            'avg_danger_moments': np.mean(danger_counts),
+            'max_danger_level': np.mean(max_danger_levels),
+            'danger_frequency': np.mean([d > 0 for d in danger_counts])
+        }
+
+    def pressure_dynamics_analysis(self) -> Dict:
+        """压力动态分析"""
+        print("⚡ 执行压力动态分析...")
+
+        pressure_dynamics = {}
+
+        pressure_columns = ['PressureValueMean', 'PressureValueMax', 'PressureValueStdDev']
+
+        for pos in ['pos1', 'pos2', 'pos3']:
+            pos_dynamics = {}
+
+            for value in range(1, 10):
+                subset = self.data[self.features[pos] == value]
+
+                if len(subset) < 10:
+                    continue
+
+                value_dynamics = {}
+
+                for pressure_col in pressure_columns:
+                    if pressure_col in subset.columns:
+                        pressure_values = subset[pressure_col].dropna()
+
+                        if len(pressure_values) > 0:
+                            # 基础统计
+                            stats = {
+                                'mean': pressure_values.mean(),
+                                'std': pressure_values.std(),
+                                'median': pressure_values.median(),
+                                'q75': pressure_values.quantile(0.75),
+                                'q95': pressure_values.quantile(0.95),
+                                'max': pressure_values.max()
+                            }
+
+                            # 压力分布分析
+                            low_pressure = (pressure_values < pressure_values.quantile(0.33)).sum()
+                            high_pressure = (pressure_values > pressure_values.quantile(0.67)).sum()
+
+                            pressure_distribution = {
+                                'low_pressure_count': low_pressure,
+                                'high_pressure_count': high_pressure,
+                                'extreme_pressure_count': (pressure_values > pressure_values.quantile(0.9)).sum()
+                            }
+
+                            value_dynamics[pressure_col] = {
+                                'statistics': stats,
+                                'distribution': pressure_distribution
+                            }
+
+                pos_dynamics[f'value_{value}'] = value_dynamics
+
+            pressure_dynamics[pos] = pos_dynamics
+
+        self.results['pressure_dynamics'] = pressure_dynamics
+        print("✅ 压力动态分析完成")
+        return pressure_dynamics
+
     def pattern_analysis(self) -> Dict:
         """配置模式分析"""
         print("🎯 执行配置模式分析...")
@@ -646,6 +991,12 @@ class ExperienceConfigAnalyzer:
         dynamic_effects = self.dynamic_impact_analysis()
         mechanism_effects = self.mechanism_analysis()
 
+        # 新增深度分析方法
+        value_specific_effects = self.value_specific_analysis()
+        gradient_effects = self.gradient_effect_analysis()
+        dock_deep_effects = self.dock_sequence_deep_analysis()
+        pressure_dynamics = self.pressure_dynamics_analysis()
+
         # 机器学习建模
         models = self.build_prediction_models()
 
@@ -670,6 +1021,10 @@ class ExperienceConfigAnalyzer:
                 'advanced_analysis': len(independent_effects) > 0 and len(interaction_effects) > 0,
                 'dynamic_analysis': len(dynamic_effects) > 0,
                 'mechanism_analysis': len(mechanism_effects) > 0,
+                'value_specific_analysis': len(value_specific_effects) > 0,
+                'gradient_analysis': len(gradient_effects) > 0,
+                'dock_deep_analysis': len(dock_deep_effects) > 0,
+                'pressure_dynamics': len(pressure_dynamics) > 0,
                 'models_completed': len(models) > 0,
                 'best_model_r2': max([m['r2_score'] for m in models.values()]) if models else 0
             },
@@ -711,7 +1066,11 @@ class ExperienceConfigAnalyzer:
             ("模型性能图", self._plot_model_performance),
             ("位置独立效应图", self._plot_independent_effects),
             ("交互效应图", self._plot_interaction_effects),
-            ("机制分析图", self._plot_mechanism_analysis)
+            ("机制分析图", self._plot_mechanism_analysis),
+            ("数值影响矩阵热力图", self._plot_value_impact_heatmaps),
+            ("数值梯度效应曲线", self._plot_gradient_curves),
+            ("Dock序列模式图", self._plot_dock_sequence_patterns),
+            ("压力动态分布图", self._plot_pressure_dynamics)
         ]
 
         successful_charts = 0
@@ -902,6 +1261,12 @@ class ExperienceConfigAnalyzer:
         # 机制分析
         self._add_mechanism_effects_report(report)
 
+        # 新增深度分析报告
+        self._add_value_specific_report(report)
+        self._add_gradient_effects_report(report)
+        self._add_dock_sequence_report(report)
+        self._add_pressure_dynamics_report(report)
+
         # 关键发现与建议
         self._add_key_findings_and_recommendations(report)
 
@@ -1011,6 +1376,183 @@ class ExperienceConfigAnalyzer:
         report.append("1. 重点关注影响力最大的位置参数")
         report.append("2. 考虑位置间的交互效应，避免单纯的独立调整")
         report.append("3. 根据中介机制针对性优化，提高调整精度")
+
+    def _add_value_specific_report(self, report):
+        """添加单一数值深度分析报告"""
+        if 'value_specific_effects' not in self.results:
+            return
+
+        report.append("\n## 🎯 数值特异性影响分析\n")
+
+        # 重点分析几个关键数值
+        key_values = [1, 3, 5, 7, 9]  # 分析关键数值点
+
+        for value in key_values:
+            value_key = f"value_{value}"
+            if value_key in self.results['value_specific_effects']:
+                report.append(f"### 数值{value}的影响特征:")
+
+                value_data = self.results['value_specific_effects'][value_key]
+
+                for pos in ['pos1', 'pos2', 'pos3']:
+                    if pos in value_data:
+                        pos_data = value_data[pos]
+                        report.append(f"#### {pos}位置:")
+
+                        # 难度影响
+                        if 'difficulty_impact' in pos_data:
+                            diff_data = pos_data['difficulty_impact']
+                            report.append(f"- **难度影响**: 平均{diff_data['mean']:.2f}, 标准差{diff_data['std']:.2f}, 样本{diff_data['count']}个")
+
+                        # 胜率影响
+                        if 'win_rate' in pos_data:
+                            win_data = pos_data['win_rate']
+                            report.append(f"- **胜率表现**: 成功率{win_data['success_rate']:.3f} ({win_data['total_games']}局游戏)")
+
+                        # Dock影响
+                        if 'dock_impact' in pos_data:
+                            dock_data = pos_data['dock_impact']
+                            if 'avg_sequence_length' in dock_data:
+                                report.append(f"- **游戏时长**: 平均{dock_data['avg_sequence_length']:.1f}步")
+
+                        # 压力影响
+                        if 'pressure_impact' in pos_data:
+                            pressure_data = pos_data['pressure_impact']
+                            for pressure_type, pressure_stats in pressure_data.items():
+                                if 'mean' in pressure_stats:
+                                    report.append(f"- **{pressure_type}**: {pressure_stats['mean']:.3f}")
+
+                report.append("")  # 空行分隔
+
+    def _add_gradient_effects_report(self, report):
+        """添加数值梯度效应报告"""
+        if 'gradient_effects' not in self.results:
+            return
+
+        report.append("\n## 📈 数值梯度效应分析\n")
+
+        for pos in ['pos1', 'pos2', 'pos3']:
+            if pos in self.results['gradient_effects']:
+                report.append(f"### {pos}梯度效应:")
+                pos_gradients = self.results['gradient_effects'][pos]
+
+                for metric in ['DifficultyScore', 'PeakDockCount', 'PressureValueMean']:
+                    if metric in pos_gradients:
+                        gradient_data = pos_gradients[metric]
+                        critical_point = gradient_data['critical_point']
+                        max_gradient = gradient_data['max_gradient']
+                        avg_gradient = gradient_data['avg_gradient']
+
+                        report.append(f"- **{metric}梯度**: 平均梯度{avg_gradient:.3f}, 最大梯度{max_gradient:.3f}")
+                        if critical_point:
+                            report.append(f"  - 关键转折点: 数值{critical_point}")
+
+                report.append("")
+
+    def _add_dock_sequence_report(self, report):
+        """添加Dock序列深度分析报告"""
+        if 'dock_deep_analysis' not in self.results:
+            return
+
+        report.append("\n## 🚢 Dock序列深度分析\n")
+
+        for pos in ['pos1', 'pos2', 'pos3']:
+            if pos in self.results['dock_deep_analysis']:
+                report.append(f"### {pos}序列特征:")
+                pos_data = self.results['dock_deep_analysis'][pos]
+
+                # 找出最高和最低胜率的配置
+                best_config = None
+                worst_config = None
+                best_rate = 0
+                worst_rate = 1
+
+                for value in range(1, 10):
+                    value_key = f'value_{value}'
+                    if value_key in pos_data:
+                        success_rate = pos_data[value_key]['success_rate']
+                        if success_rate > best_rate:
+                            best_rate = success_rate
+                            best_config = value
+                        if success_rate < worst_rate:
+                            worst_rate = success_rate
+                            worst_config = value
+
+                if best_config:
+                    report.append(f"- **最佳配置**: 数值{best_config}, 胜率{best_rate:.3f}")
+                if worst_config:
+                    report.append(f"- **最差配置**: 数值{worst_config}, 胜率{worst_rate:.3f}")
+
+                # 分析序列模式
+                for value in range(1, 10):
+                    value_key = f'value_{value}'
+                    if value_key in pos_data:
+                        value_analysis = pos_data[value_key]
+                        if 'patterns' in value_analysis and 'pattern_type' in value_analysis['patterns']:
+                            pattern_type = value_analysis['patterns']['pattern_type']
+                            avg_length = value_analysis['avg_length']
+
+                            if pattern_type != 'insufficient_data':
+                                pattern_name = {
+                                    'increasing_pressure': '压力递增型',
+                                    'decreasing_pressure': '压力递减型',
+                                    'stable_pressure': '压力稳定型'
+                                }.get(pattern_type, pattern_type)
+
+                                report.append(f"- **数值{value}**: {pattern_name}, 平均时长{avg_length:.1f}步")
+
+                report.append("")
+
+    def _add_pressure_dynamics_report(self, report):
+        """添加压力动态分析报告"""
+        if 'pressure_dynamics' not in self.results:
+            return
+
+        report.append("\n## ⚡ 压力动态分析\n")
+
+        pressure_names = {
+            'PressureValueMean': '平均压力',
+            'PressureValueMax': '峰值压力',
+            'PressureValueStdDev': '压力波动'
+        }
+
+        for pos in ['pos1', 'pos2', 'pos3']:
+            if pos in self.results['pressure_dynamics']:
+                report.append(f"### {pos}压力动态:")
+                pos_data = self.results['pressure_dynamics'][pos]
+
+                # 分析每种压力类型
+                for pressure_type, pressure_name in pressure_names.items():
+                    report.append(f"#### {pressure_name}:")
+
+                    # 找出极值配置
+                    min_pressure_config = None
+                    max_pressure_config = None
+                    min_pressure = float('inf')
+                    max_pressure = 0
+
+                    for value in range(1, 10):
+                        value_key = f'value_{value}'
+                        if (value_key in pos_data and
+                            pressure_type in pos_data[value_key] and
+                            'statistics' in pos_data[value_key][pressure_type]):
+
+                            stats = pos_data[value_key][pressure_type]['statistics']
+                            mean_pressure = stats['mean']
+
+                            if mean_pressure < min_pressure:
+                                min_pressure = mean_pressure
+                                min_pressure_config = value
+                            if mean_pressure > max_pressure:
+                                max_pressure = mean_pressure
+                                max_pressure_config = value
+
+                    if min_pressure_config:
+                        report.append(f"- **最低压力**: 数值{min_pressure_config}, {pressure_name}{min_pressure:.3f}")
+                    if max_pressure_config:
+                        report.append(f"- **最高压力**: 数值{max_pressure_config}, {pressure_name}{max_pressure:.3f}")
+
+                report.append("")
 
     def _print_key_findings(self):
         """输出关键发现摘要"""
@@ -1301,6 +1843,203 @@ class ExperienceConfigAnalyzer:
         plt.savefig(output_path / 'model_performance.png', dpi=300, bbox_inches='tight')
         plt.close()
 
+    def _plot_value_impact_heatmaps(self, output_path: Path):
+        """绘制数值影响矩阵热力图 - 9×3矩阵显示每个数值在每个位置的影响"""
+        if 'value_specific_effects' not in self.results:
+            return
+
+        fig, axes = plt.subplots(1, 3, figsize=(18, 8))
+
+        # 为每个指标创建热力图
+        metrics = ['DifficultyScore', 'success_rate', 'PressureValueMean']
+        metric_names = ['难度分数', '胜率', '平均压力']
+
+        for idx, (metric_key, metric_name) in enumerate(zip(metrics, metric_names)):
+            # 构建9x3矩阵
+            matrix = np.zeros((9, 3))
+
+            for value in range(1, 10):
+                value_key = f"value_{value}"
+                if value_key in self.results['value_specific_effects']:
+                    for pos_idx, pos in enumerate(['pos1', 'pos2', 'pos3']):
+                        if pos in self.results['value_specific_effects'][value_key]:
+                            pos_data = self.results['value_specific_effects'][value_key][pos]
+
+                            if metric_key == 'DifficultyScore' and 'difficulty_impact' in pos_data:
+                                matrix[value-1, pos_idx] = pos_data['difficulty_impact']['mean']
+                            elif metric_key == 'success_rate' and 'win_rate' in pos_data:
+                                matrix[value-1, pos_idx] = pos_data['win_rate']['success_rate']
+                            elif metric_key == 'PressureValueMean' and 'pressure_impact' in pos_data:
+                                pressure_data = pos_data['pressure_impact']
+                                if 'PressureValueMean' in pressure_data:
+                                    matrix[value-1, pos_idx] = pressure_data['PressureValueMean']['mean']
+
+            # 绘制热力图
+            im = axes[idx].imshow(matrix, aspect='auto', cmap='RdYlBu_r')
+
+            # 设置标签
+            axes[idx].set_xticks(range(3))
+            axes[idx].set_xticklabels(['位置1', '位置2', '位置3'])
+            axes[idx].set_yticks(range(9))
+            axes[idx].set_yticklabels([f'数值{i}' for i in range(1, 10)])
+            axes[idx].set_title(f'{metric_name}影响矩阵')
+
+            # 添加颜色条
+            plt.colorbar(im, ax=axes[idx])
+
+        plt.suptitle('数值-位置影响矩阵热力图', fontsize=16, fontweight='bold')
+        plt.tight_layout()
+        plt.savefig(output_path / 'value_impact_heatmaps.png', dpi=300, bbox_inches='tight')
+        plt.close()
+
+    def _plot_gradient_curves(self, output_path: Path):
+        """绘制数值梯度效应曲线"""
+        if 'gradient_effects' not in self.results:
+            return
+
+        fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+
+        for idx, pos in enumerate(['pos1', 'pos2', 'pos3']):
+            if pos in self.results['gradient_effects']:
+                pos_gradients = self.results['gradient_effects'][pos]
+
+                for metric in ['DifficultyScore', 'PeakDockCount', 'PressureValueMean']:
+                    if metric in pos_gradients:
+                        data = pos_gradients[metric]
+                        value_means = data['value_means']
+                        critical_point = data['critical_point']
+
+                        # 过滤掉nan值
+                        valid_indices = [i for i, val in enumerate(value_means) if not np.isnan(val)]
+                        valid_values = [i+1 for i in valid_indices]
+                        valid_means = [value_means[i] for i in valid_indices]
+
+                        if len(valid_values) > 2:
+                            axes[idx].plot(valid_values, valid_means, 'o-', label=metric, linewidth=2, markersize=6)
+
+                            # 标记临界点
+                            if critical_point and critical_point in valid_values:
+                                critical_idx = valid_values.index(critical_point)
+                                axes[idx].scatter([critical_point], [valid_means[critical_idx]],
+                                                s=100, c='red', marker='*', zorder=5)
+
+                axes[idx].set_xlabel('配置数值')
+                axes[idx].set_ylabel('指标均值')
+                axes[idx].set_title(f'{pos}梯度效应曲线')
+                axes[idx].legend()
+                axes[idx].grid(True, alpha=0.3)
+
+        plt.suptitle('数值梯度效应分析曲线', fontsize=16, fontweight='bold')
+        plt.tight_layout()
+        plt.savefig(output_path / 'gradient_curves.png', dpi=300, bbox_inches='tight')
+        plt.close()
+
+    def _plot_dock_sequence_patterns(self, output_path: Path):
+        """绘制Dock序列模式图"""
+        if 'dock_deep_analysis' not in self.results:
+            return
+
+        fig, axes = plt.subplots(2, 3, figsize=(18, 12))
+
+        # 为每个位置绘制不同数值的序列模式
+        colors = plt.cm.Set3(np.linspace(0, 1, 9))
+
+        for pos_idx, pos in enumerate(['pos1', 'pos2', 'pos3']):
+            if pos in self.results['dock_deep_analysis']:
+                pos_data = self.results['dock_deep_analysis'][pos]
+
+                # 上方图: 平均序列长度
+                lengths = []
+                success_rates = []
+                values = []
+
+                for value in range(1, 10):
+                    value_key = f'value_{value}'
+                    if value_key in pos_data:
+                        lengths.append(pos_data[value_key]['avg_length'])
+                        success_rates.append(pos_data[value_key]['success_rate'])
+                        values.append(value)
+
+                if lengths:
+                    bars = axes[0, pos_idx].bar(values, lengths, color=colors[:len(values)], alpha=0.7)
+                    axes[0, pos_idx].set_xlabel('配置数值')
+                    axes[0, pos_idx].set_ylabel('平均序列长度')
+                    axes[0, pos_idx].set_title(f'{pos} - 平均游戏时长')
+
+                    # 添加数值标签
+                    for bar, length in zip(bars, lengths):
+                        axes[0, pos_idx].text(bar.get_x() + bar.get_width()/2,
+                                            bar.get_height() + bar.get_height()*0.01,
+                                            f'{length:.1f}', ha='center', va='bottom')
+
+                # 下方图: 成功率
+                if success_rates:
+                    bars = axes[1, pos_idx].bar(values, success_rates, color=colors[:len(values)], alpha=0.7)
+                    axes[1, pos_idx].set_xlabel('配置数值')
+                    axes[1, pos_idx].set_ylabel('成功率')
+                    axes[1, pos_idx].set_title(f'{pos} - 胜率表现')
+                    axes[1, pos_idx].set_ylim(0, 1)
+
+                    # 添加数值标签
+                    for bar, rate in zip(bars, success_rates):
+                        axes[1, pos_idx].text(bar.get_x() + bar.get_width()/2,
+                                            bar.get_height() + 0.02,
+                                            f'{rate:.3f}', ha='center', va='bottom')
+
+        plt.suptitle('Dock序列模式与成功率分析', fontsize=16, fontweight='bold')
+        plt.tight_layout()
+        plt.savefig(output_path / 'dock_sequence_patterns.png', dpi=300, bbox_inches='tight')
+        plt.close()
+
+    def _plot_pressure_dynamics(self, output_path: Path):
+        """绘制压力动态分布图"""
+        if 'pressure_dynamics' not in self.results:
+            return
+
+        fig, axes = plt.subplots(3, 3, figsize=(18, 15))
+
+        pressure_types = ['PressureValueMean', 'PressureValueMax', 'PressureValueStdDev']
+        pressure_names = ['平均压力', '最大压力', '压力波动']
+
+        for row, (pressure_type, pressure_name) in enumerate(zip(pressure_types, pressure_names)):
+            for col, pos in enumerate(['pos1', 'pos2', 'pos3']):
+                if pos in self.results['pressure_dynamics']:
+                    pos_data = self.results['pressure_dynamics'][pos]
+
+                    # 收集数据
+                    values = []
+                    means = []
+                    q95s = []
+
+                    for value in range(1, 10):
+                        value_key = f'value_{value}'
+                        if (value_key in pos_data and
+                            pressure_type in pos_data[value_key] and
+                            'statistics' in pos_data[value_key][pressure_type]):
+
+                            stats = pos_data[value_key][pressure_type]['statistics']
+                            values.append(value)
+                            means.append(stats['mean'])
+                            q95s.append(stats['q95'])
+
+                    if values:
+                        # 绘制平均值线
+                        axes[row, col].plot(values, means, 'o-', label='平均值', linewidth=2, markersize=6)
+
+                        # 绘制95%分位数线
+                        axes[row, col].plot(values, q95s, 's--', label='95%分位数', alpha=0.7)
+
+                        axes[row, col].set_xlabel('配置数值')
+                        axes[row, col].set_ylabel(pressure_name)
+                        axes[row, col].set_title(f'{pos} - {pressure_name}动态')
+                        axes[row, col].legend()
+                        axes[row, col].grid(True, alpha=0.3)
+
+        plt.suptitle('压力指标动态分析', fontsize=16, fontweight='bold')
+        plt.tight_layout()
+        plt.savefig(output_path / 'pressure_dynamics.png', dpi=300, bbox_inches='tight')
+        plt.close()
+
     def create_visualizations(self, output_dir: str = None):
         """兼容方法：创建可视化图表"""
         self.create_enhanced_visualizations(output_dir)
@@ -1318,6 +2057,10 @@ def main():
     # 设置UTF-8编码输出
     if sys.platform.startswith('win'):
         os.system('chcp 65001 >nul 2>&1')
+        # 设置控制台输出编码
+        import io
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
     print("🚀 体验模式配置深度影响分析工具启动...")
 
