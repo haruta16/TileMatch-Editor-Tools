@@ -24,9 +24,10 @@ from pathlib import Path
 from typing import List, Dict, Tuple, Optional
 import json
 
-# 设置中文字体和样式
-plt.rcParams['font.sans-serif'] = ['SimHei', 'Arial Unicode MS', 'DejaVu Sans']
+# 设置中文字体和样式 - 修复中文显示问题
+plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'DejaVu Sans', 'Arial Unicode MS']
 plt.rcParams['axes.unicode_minus'] = False
+plt.rcParams['font.size'] = 10
 sns.set_style("whitegrid")
 warnings.filterwarnings('ignore')
 
@@ -48,7 +49,7 @@ class ExperienceConfigAnalyzer:
         self.target_metrics = [
             'DifficultyScore', 'PeakDockCount', 'PressureValueMean',
             'PressureValueMax', 'PressureValueStdDev', 'FinalDifficulty',
-            'TotalMoves', 'InitialMinCost', 'DifficultyPosition'
+            'InitialMinCost', 'DifficultyPosition'
         ]
         self.results = {}
 
@@ -61,7 +62,7 @@ class ExperienceConfigAnalyzer:
         if analysis_charts_dir.exists():
             csv_files = list(analysis_charts_dir.glob("*.csv"))
             if csv_files:
-                print(f"🔍 检测到analysis_charts目录，包含{len(csv_files)}个CSV文件")
+                print(f"检测到analysis_charts目录，包含{len(csv_files)}个CSV文件")
                 return str(analysis_charts_dir)
 
         # 查找BattleAnalysisResults根目录
@@ -227,6 +228,13 @@ class ExperienceConfigAnalyzer:
 
         self.features = features_df
 
+        # 如果存在包含失败数据的数据集，也为其创建特征
+        if hasattr(self, 'data_with_failures') and len(self.data_with_failures) > len(self.data):
+            features_with_failures = self.data_with_failures[['pos1', 'pos2', 'pos3']].copy()
+            # 添加基本特征
+            features_with_failures['config_mean'] = (self.data_with_failures['pos1'] + self.data_with_failures['pos2'] + self.data_with_failures['pos3']) / 3
+            self.features_with_failures = features_with_failures
+
     def _clean_data(self):
         """数据清洗，增强边界条件检查"""
         initial_count = len(self.data)
@@ -237,12 +245,16 @@ class ExperienceConfigAnalyzer:
 
         # 检查GameCompleted列是否存在
         if 'GameCompleted' in self.data.columns:
-            # 移除GameCompleted=False的记录
-            completed_mask = (self.data['GameCompleted'] == True) | (self.data['GameCompleted'] == 'True')
+            # 对于非成功率分析，移除GameCompleted=False的记录
+            # 保留原始数据用于后续成功率计算
+            self.data_with_failures = self.data.copy()  # 保存包含失败游戏的完整数据
+
+            completed_mask = (self.data['GameCompleted'] == True) | (self.data['GameCompleted'] == 'True') | (self.data['GameCompleted'] == 1)
             self.data = self.data[completed_mask].copy()
-            print(f"   完成游戏过滤: {len(self.data)}条记录")
+            print(f"   ✅ 完成游戏过滤: {len(self.data)}条记录用于主分析，{len(self.data_with_failures)}条记录保留用于成功率分析")
         else:
             print("   ⚠️ 未找到GameCompleted列，跳过完成状态过滤")
+            self.data_with_failures = self.data.copy()  # 备份数据
 
         # 移除目标指标为空值的记录
         metrics_found = []
@@ -336,6 +348,165 @@ class ExperienceConfigAnalyzer:
         self.results['correlations'] = correlations
         print("✅ 基础相关性分析完成")
         return correlations
+
+    def difficulty_position_analysis(self) -> Dict:
+        """DifficultyPosition位置影响分析 - 分析不同体验配置在不同位置对DifficultyPosition的影响"""
+        print("🏆 执行DifficultyPosition位置影响分析...")
+
+        position_effects = {}
+
+        if 'DifficultyPosition' not in self.data.columns:
+            print("   ⚠️ 无DifficultyPosition列，跳过此分析")
+            return {}
+
+        # 分析每个位置对DifficultyPosition的影响
+        for pos in ['pos1', 'pos2', 'pos3']:
+            pos_effects = {}
+
+            # 计算每个数值的DifficultyPosition平均值
+            value_effects = {}
+            for value in range(1, 10):
+                subset = self.data[self.features[pos] == value]
+                if len(subset) > 5:  # 确保样本量足够
+                    difficulty_pos = subset['DifficultyPosition'].dropna()
+                    if len(difficulty_pos) > 0:
+                        value_effects[value] = {
+                            'mean': difficulty_pos.mean(),
+                            'std': difficulty_pos.std(),
+                            'median': difficulty_pos.median(),
+                            'count': len(difficulty_pos),
+                            'min': difficulty_pos.min(),
+                            'max': difficulty_pos.max()
+                        }
+
+            pos_effects['value_effects'] = value_effects
+
+            # 计算相关性
+            if len(self.features[pos]) > 0 and len(self.data['DifficultyPosition'].dropna()) > 0:
+                corr, p_value = pearsonr(self.features[pos], self.data['DifficultyPosition'].fillna(0))
+                pos_effects['correlation'] = {
+                    'correlation': corr,
+                    'p_value': p_value,
+                    'significant': p_value < 0.05
+                }
+
+            # 找出最佳和最差配置（基于0-1范围：0=最前，0.99=最后，1=无难点）
+            if value_effects:
+                # 分离不同类型的配置
+                no_difficulty_configs = {k: v for k, v in value_effects.items() if abs(v['mean'] - 1.0) < 0.01}  # 约等于1，无难点
+                early_difficulty_configs = {k: v for k, v in value_effects.items() if 0 <= v['mean'] < 0.3}  # 前期难点
+                mid_difficulty_configs = {k: v for k, v in value_effects.items() if 0.3 <= v['mean'] < 0.7}  # 中期难点
+                late_difficulty_configs = {k: v for k, v in value_effects.items() if 0.7 <= v['mean'] < 1.0}  # 后期难点
+
+                # 评估最佳配置的逻辑
+                if mid_difficulty_configs:
+                    # 中期难点是最理想的，选择中期难点中相对靠后的
+                    best_value = max(mid_difficulty_configs.items(), key=lambda x: x[1]['mean'])
+                    best_description = '中期难点（理想节奏）'
+                elif late_difficulty_configs:
+                    # 后期难点次之，选择适中的后期难点
+                    best_value = min(late_difficulty_configs.items(), key=lambda x: x[1]['mean'])
+                    best_description = '后期难点（渐进式挑战）'
+                elif no_difficulty_configs:
+                    # 无明显难点也可以接受
+                    best_value = list(no_difficulty_configs.items())[0]
+                    best_description = '无明显难点（平均体验）'
+                elif early_difficulty_configs:
+                    # 如果只有前期难点，选择相对靠后的
+                    best_value = max(early_difficulty_configs.items(), key=lambda x: x[1]['mean'])
+                    best_description = '前期难点（相对较晚）'
+                else:
+                    # 兜底
+                    best_value = max(value_effects.items(), key=lambda x: x[1]['mean'])
+                    best_description = '相对最佳'
+
+                # 评估最差配置的逻辑
+                if early_difficulty_configs:
+                    # 前期难点是最差的，选择最早的
+                    worst_value = min(early_difficulty_configs.items(), key=lambda x: x[1]['mean'])
+                    worst_description = '前期难点（开局挫败）'
+                elif value_effects:
+                    # 如果没有前期难点，选择最不理想的
+                    worst_value = min(value_effects.items(), key=lambda x: x[1]['mean'])
+                    worst_description = '相对最差'
+                else:
+                    worst_value = best_value
+                    worst_description = '相对最差'
+
+                pos_effects['best_config'] = {
+                    'value': best_value[0],
+                    'mean_difficulty_position': best_value[1]['mean'],
+                    'sample_count': best_value[1]['count'],
+                    'description': best_description
+                }
+
+                pos_effects['worst_config'] = {
+                    'value': worst_value[0],
+                    'mean_difficulty_position': worst_value[1]['mean'],
+                    'sample_count': worst_value[1]['count'],
+                    'description': worst_description
+                }
+
+                # 添加各类配置的统计
+                config_categories = {
+                    'no_difficulty': (no_difficulty_configs, '无明显难点'),
+                    'early_difficulty': (early_difficulty_configs, '前期难点'),
+                    'mid_difficulty': (mid_difficulty_configs, '中期难点'),
+                    'late_difficulty': (late_difficulty_configs, '后期难点')
+                }
+
+                for category_name, (configs, description) in config_categories.items():
+                    if configs:
+                        pos_effects[f'{category_name}_configs'] = {
+                            'count': len(configs),
+                            'values': list(configs.keys()),
+                            'description': description,
+                            'avg_position': sum(v['mean'] for v in configs.values()) / len(configs)
+                        }
+
+            position_effects[pos] = pos_effects
+
+        # 交互效应分析
+        interaction_effects = {}
+        for pos_pair in [('pos1', 'pos2'), ('pos1', 'pos3'), ('pos2', 'pos3')]:
+            pair_key = f"{pos_pair[0]}×{pos_pair[1]}"
+
+            # 计算交互项对DifficultyPosition的影响
+            interaction_feature = self.features[pos_pair[0]] * self.features[pos_pair[1]]
+
+            # 基础模型 vs 交互模型
+            X_base = self.features[[pos_pair[0], pos_pair[1]]]
+            X_inter = X_base.copy()
+            X_inter['interaction'] = interaction_feature
+
+            y_valid = self.data['DifficultyPosition'].dropna()
+            X_base_valid = X_base.loc[y_valid.index]
+            X_inter_valid = X_inter.loc[y_valid.index]
+
+            if len(y_valid) > 10:
+                try:
+                    rf_base = RandomForestRegressor(n_estimators=50, random_state=42)
+                    rf_base.fit(X_base_valid, y_valid)
+                    r2_base = rf_base.score(X_base_valid, y_valid)
+
+                    rf_inter = RandomForestRegressor(n_estimators=50, random_state=42)
+                    rf_inter.fit(X_inter_valid, y_valid)
+                    r2_inter = rf_inter.score(X_inter_valid, y_valid)
+
+                    interaction_effects[pair_key] = {
+                        'r2_base': r2_base,
+                        'r2_interaction': r2_inter,
+                        'interaction_gain': r2_inter - r2_base,
+                        'sample_count': len(y_valid)
+                    }
+                except Exception as e:
+                    print(f"   ⚠️ {pair_key}交互分析失败: {str(e)}")
+
+        position_effects['interaction_effects'] = interaction_effects
+
+        self.results['difficulty_position_effects'] = position_effects
+        print("✅ DifficultyPosition位置影响分析完成")
+        return position_effects
 
     def position_independent_analysis(self) -> Dict:
         """位置独立影响分析 - 控制其他变量分析单个位置的纯净效应"""
@@ -555,14 +726,42 @@ class ExperienceConfigAnalyzer:
                     }
                     pos_data['difficulty_impact'] = difficulty_stats
 
-                # 胜率分析
-                if 'GameCompleted' in subset.columns:
-                    win_rate = (subset['GameCompleted'] == True).mean()
-                    pos_data['win_rate'] = {
-                        'success_rate': win_rate,
-                        'failure_rate': 1 - win_rate,
-                        'total_games': len(subset)
-                    }
+                # 胜率分析 - 使用包含失败游戏的完整数据
+                if 'GameCompleted' in self.data_with_failures.columns:
+                    # 从完整数据中筛选当前配置的子集
+                    # 安全的索引方式处理包含失败数据的完整数据集
+                    if hasattr(self, 'data_with_failures'):
+                        if hasattr(self, 'features_with_failures'):
+                            # 使用包含失败数据的特征
+                            full_subset = self.data_with_failures[self.features_with_failures[pos] == value]
+                        else:
+                            # 直接从原始数据中解析配置进行筛选
+                            def get_pos_value(exp_mode_str):
+                                try:
+                                    clean_str = str(exp_mode_str).strip('[]"()')
+                                    numbers = [int(x.strip()) for x in clean_str.split(',')]
+                                    if len(numbers) >= 3:
+                                        pos_map = {'pos1': numbers[0], 'pos2': numbers[1], 'pos3': numbers[2]}
+                                        return pos_map.get(pos, 0)
+                                    return 0
+                                except:
+                                    return 0
+
+                            exp_mode_filter = self.data_with_failures['ExperienceMode'].astype(str).apply(
+                                lambda x: get_pos_value(x) == value
+                            )
+                            full_subset = self.data_with_failures[exp_mode_filter]
+                    else:
+                        full_subset = subset
+                    if len(full_subset) > 0:
+                        # 正确处理GameCompleted列的不同格式
+                        completed_mask = (full_subset['GameCompleted'] == True) | (full_subset['GameCompleted'] == 'True') | (full_subset['GameCompleted'] == 1)
+                        win_rate = completed_mask.mean()
+                        pos_data['win_rate'] = {
+                            'success_rate': win_rate,
+                            'failure_rate': 1 - win_rate,
+                            'total_games': len(full_subset)
+                        }
 
                 # DockAfterTrioMatch序列分析
                 if 'DockAfterTrioMatch' in subset.columns:
@@ -604,7 +803,6 @@ class ExperienceConfigAnalyzer:
 
         # 计算序列统计
         seq_lengths = [len(seq) for seq in sequences]
-        avg_length = np.mean(seq_lengths)
 
         # 分析不同阶段的平均Dock值
         early_vals, middle_vals, late_vals = [], [], []
@@ -616,7 +814,6 @@ class ExperienceConfigAnalyzer:
                 late_vals.extend(seq[2*third:])
 
         return {
-            'avg_sequence_length': avg_length,
             'total_sequences': len(sequences),
             'phase_analysis': {
                 'early_phase': {'mean': np.mean(early_vals) if early_vals else 0, 'count': len(early_vals)},
@@ -688,20 +885,40 @@ class ExperienceConfigAnalyzer:
 
         dock_deep_analysis = {}
 
-        # 解析所有序列数据
+        # 解析所有序列数据 - 使用包含失败游戏的完整数据进行成功率计算
+        data_for_analysis = self.data_with_failures if hasattr(self, 'data_with_failures') else self.data
         all_sequences = []
         sequence_metadata = []
 
-        for idx, row in self.data.iterrows():
+        for idx, row in data_for_analysis.iterrows():
             dock_str = row.get('DockAfterTrioMatch', '')
             if dock_str and str(dock_str) != 'nan':
                 try:
                     dock_values = [int(x) for x in str(dock_str).split(',')]
                     all_sequences.append(dock_values)
+
+                    # 需要从特征数据中获取pos配置（如果索引对应的话）
+                    if idx in self.features.index:
+                        pos_config = {
+                            'pos1': self.features.loc[idx, 'pos1'],
+                            'pos2': self.features.loc[idx, 'pos2'],
+                            'pos3': self.features.loc[idx, 'pos3']
+                        }
+                    else:
+                        # 重新解析配置（备用方案）
+                        exp_mode = row.get('ExperienceMode', '[1,2,3]')
+                        try:
+                            clean_str = str(exp_mode).strip('[]"()')
+                            numbers = [int(x.strip()) for x in clean_str.split(',')]
+                            if len(numbers) >= 3:
+                                pos_config = {'pos1': numbers[0], 'pos2': numbers[1], 'pos3': numbers[2]}
+                            else:
+                                pos_config = {'pos1': 1, 'pos2': 2, 'pos3': 3}
+                        except:
+                            pos_config = {'pos1': 1, 'pos2': 2, 'pos3': 3}
+
                     sequence_metadata.append({
-                        'pos1': self.features.loc[idx, 'pos1'],
-                        'pos2': self.features.loc[idx, 'pos2'],
-                        'pos3': self.features.loc[idx, 'pos3'],
+                        **pos_config,
                         'difficulty': row.get('DifficultyScore', 0),
                         'completed': row.get('GameCompleted', False)
                     })
@@ -737,11 +954,19 @@ class ExperienceConfigAnalyzer:
                 danger_analysis = self._analyze_danger_moments(value_sequences)
 
                 # 成功率与序列特征关系
-                success_rate = np.mean([meta['completed'] for meta in value_metadata])
+                completed_values = []
+                for meta in value_metadata:
+                    completed = meta['completed']
+                    # 处理不同的GameCompleted格式
+                    if completed == True or completed == 'True' or completed == 1:
+                        completed_values.append(1)
+                    else:
+                        completed_values.append(0)
+
+                success_rate = np.mean(completed_values) if completed_values else 0
 
                 pos_analysis[f'value_{value}'] = {
                     'sequence_count': len(value_sequences),
-                    'avg_length': np.mean(lengths),
                     'success_rate': success_rate,
                     'patterns': patterns,
                     'danger_analysis': danger_analysis
@@ -985,6 +1210,9 @@ class ExperienceConfigAnalyzer:
         correlations = self.correlation_analysis()
         patterns = self.pattern_analysis()
 
+        # 重要：新增DifficultyPosition影响分析
+        difficulty_position_effects = self.difficulty_position_analysis()
+
         # 深度分析（新增）
         independent_effects = self.position_independent_analysis()
         interaction_effects = self.interaction_analysis()
@@ -1064,6 +1292,7 @@ class ExperienceConfigAnalyzer:
             ("特征重要性图", self._plot_feature_importance),
             ("配置分布图", self._plot_config_distribution),
             ("模型性能图", self._plot_model_performance),
+            ("DifficultyPosition影响分析图", self._plot_difficulty_position_analysis),
             ("位置独立效应图", self._plot_independent_effects),
             ("交互效应图", self._plot_interaction_effects),
             ("机制分析图", self._plot_mechanism_analysis),
@@ -1236,6 +1465,23 @@ class ExperienceConfigAnalyzer:
 
         report = []
         report.append("# 体验模式配置[x,y,z]深度影响分析报告\n")
+        report.append("## 📖 报告说明\n")
+        report.append("本报告分析体验配置[x,y,z]三个位置的数值对游戏各项指标的影响。")
+        report.append("体验配置是游戏难度调节的重要参数，通过分析不同配置下的游戏表现，")
+        report.append("可以帮助优化游戏平衡性和玩家体验。\n")
+
+        report.append("### 📊 分析维度说明")
+        report.append("- **DifficultyScore**: 游戏难度评分，数值越高表示难度越大")
+        report.append("- **PeakDockCount**: Dock区域瓦片数量峰值，反映游戏中的压力情况")
+        report.append("- **PressureValueMean**: 平均压力值，衡量游戏整体压力水平")
+        report.append("- **DifficultyPosition**: 关卡流程内难点出现的位置。数值范围0-1，其中0表示难点在最前面，0.99表示难点在最后面，1表示无明显难点位置")
+        report.append("- **成功率**: 玩家完成游戏的比例，是最重要的体验指标\n")
+
+        report.append("### 🎯 配置位置说明")
+        report.append("- **pos1**: 配置数组第一个位置，主要影响游戏前期难度")
+        report.append("- **pos2**: 配置数组第二个位置，主要影响游戏中期难度")
+        report.append("- **pos3**: 配置数组第三个位置，主要影响游戏后期难度")
+        report.append("- **数值范围**: 1-9，数值越小难度越低，数值越大难度越高\n")
 
         # 数据源信息
         if self.csv_path:
@@ -1248,6 +1494,9 @@ class ExperienceConfigAnalyzer:
 
         # 数据概览
         self._add_data_overview(report)
+
+        # DifficultyPosition影响分析 (新增)
+        self._add_difficulty_position_effects_report(report)
 
         # 位置独立效应分析
         self._add_independent_effects_report(report)
@@ -1290,6 +1539,10 @@ class ExperienceConfigAnalyzer:
             return
 
         report.append("\n## 🎯 位置独立效应分析\n")
+        report.append("### 📝 分析说明")
+        report.append("位置独立效应分析旨在识别每个配置位置对游戏指标的单独影响，")
+        report.append("控制其他变量的情况下，观察单个位置数值变化时指标的边际变化。")
+        report.append("边际效应表示该位置数值每增加1个单位时，目标指标的平均变化量。\n")
 
         for pos in ['pos1', 'pos2', 'pos3']:
             if pos in self.results['independent_effects']:
@@ -1307,6 +1560,10 @@ class ExperienceConfigAnalyzer:
             return
 
         report.append("\n## 🔄 位置交互效应分析\n")
+        report.append("### 📝 分析说明")
+        report.append("交互效应分析探讨不同配置位置之间的相互作用。当两个位置的组合效果")
+        report.append("超过各自独立效果的简单相加时，就存在交互效应。正的交互增益表示")
+        report.append("两个位置协同作用，负的交互增益表示两个位置相互抵消。\n")
 
         for pair, effects in self.results['interaction_effects'].items():
             report.append(f"### {pair}交互效应:")
@@ -1327,11 +1584,70 @@ class ExperienceConfigAnalyzer:
                 stage_name = {'early_correlation': '前期', 'middle_correlation': '中期', 'late_correlation': '后期'}.get(stage, stage)
                 report.append(f"- **{stage_name}**: 相关性 {corr:.3f}")
 
+    def _add_difficulty_position_effects_report(self, report):
+        """添加DifficultyPosition影响分析报告"""
+        if 'difficulty_position_effects' not in self.results:
+            return
+
+        report.append("\n## 🏆 DifficultyPosition影响分析\n")
+        report.append("### 📝 分析说明")
+        report.append("DifficultyPosition表示关卡流程内难点出现的位置，是衡量游戏体验节奏的")
+        report.append("重要指标。数值含义如下：")
+        report.append("- **DifficultyPosition = 0**: 难点在游戏最前面，开局即遇到困难")
+        report.append("- **DifficultyPosition = 0.1-0.3**: 难点在游戏前期出现")
+        report.append("- **DifficultyPosition = 0.4-0.7**: 难点在游戏中期出现")
+        report.append("- **DifficultyPosition = 0.8-0.99**: 难点在游戏后期出现")
+        report.append("- **DifficultyPosition = 1**: 无明显难点位置，体验相对平均")
+        report.append("理想情况下，应该避免难点过早出现（避免开局挫败），适中的难点位置能提供良好的挑战节奏。\n")
+
+        for pos in ['pos1', 'pos2', 'pos3']:
+            if pos in self.results['difficulty_position_effects']:
+                pos_data = self.results['difficulty_position_effects'][pos]
+                report.append(f"### {pos}对DifficultyPosition的影响:")
+
+                # 相关性分析
+                if 'correlation' in pos_data:
+                    corr_data = pos_data['correlation']
+                    significance = "显著" if corr_data['significant'] else "不显著"
+                    report.append(f"- **相关性**: {corr_data['correlation']:.3f} (p={corr_data['p_value']:.3f}, {significance})")
+
+                # 推荐和不推荐配置
+                if 'best_config' in pos_data and 'worst_config' in pos_data:
+                    best = pos_data['best_config']
+                    worst = pos_data['worst_config']
+                    report.append(f"- **推荐配置**: 数值{best['value']} (DifficultyPosition: {best['mean_difficulty_position']:.3f}, {best['description']})")
+                    report.append(f"- **不推荐配置**: 数值{worst['value']} (DifficultyPosition: {worst['mean_difficulty_position']:.3f}, {worst['description']})")
+
+                # 各类配置分布
+                categories = ['no_difficulty', 'early_difficulty', 'mid_difficulty', 'late_difficulty']
+                for category in categories:
+                    config_key = f'{category}_configs'
+                    if config_key in pos_data:
+                        config_info = pos_data[config_key]
+                        values_str = ', '.join(map(str, config_info['values']))
+                        avg_pos = config_info['avg_position']
+                        report.append(f"- **{config_info['description']}**: 数值{values_str} (共{config_info['count']}个，平均位置{avg_pos:.3f})")
+
+        # 交互效应
+        if 'interaction_effects' in self.results['difficulty_position_effects']:
+            interaction_data = self.results['difficulty_position_effects']['interaction_effects']
+            if interaction_data:
+                report.append("\n### DifficultyPosition交互效应:")
+                for pair, data in interaction_data.items():
+                    gain = data['interaction_gain']
+                    report.append(f"- **{pair}**: 交互增益 {gain:.4f}")
+
+        report.append("")
+
     def _add_mechanism_effects_report(self, report):
         if 'mechanism_effects' not in self.results:
             return
 
         report.append("\n## 🔍 影响机制分析\n")
+        report.append("### 📝 分析说明")
+        report.append("机制分析探讨配置位置如何通过中介变量影响最终指标。直接效应表示")
+        report.append("位置对目标指标的直接影响，中介效应表示通过其他指标间接影响的路径。")
+        report.append("理解这些机制有助于精确调节配置以达到预期效果。\n")
 
         for pos, mechanism in self.results['mechanism_effects'].items():
             report.append(f"### {pos}的影响机制:")
@@ -1344,6 +1660,11 @@ class ExperienceConfigAnalyzer:
 
     def _add_key_findings_and_recommendations(self, report):
         report.append("\n## 💡 关键发现与建议\n")
+        report.append("### 📝 结果解读说明")
+        report.append("- **位置重要性排序**: 基于各位置对主要指标的平均绝对相关性排序")
+        report.append("- **交互效应强度**: 衡量位置间协同或冲突的程度，绝对值越大影响越明显")
+        report.append("- **中介效应**: 分析位置通过其他指标间接影响目标指标的路径")
+        report.append("- **配置建议**: 基于统计分析结果提供的优化方向，需结合实际游戏体验验证\n")
 
         # 位置重要性排序
         if 'correlations' in self.results:
@@ -1376,6 +1697,18 @@ class ExperienceConfigAnalyzer:
         report.append("1. 重点关注影响力最大的位置参数")
         report.append("2. 考虑位置间的交互效应，避免单纯的独立调整")
         report.append("3. 根据中介机制针对性优化，提高调整精度")
+        report.append("4. **DifficultyPosition优化建议**：")
+        report.append("   - **理想范围**: 0.4-0.7（中期难点），提供良好的挑战节奏")
+        report.append("   - **避免**: 0-0.3（前期难点），容易造成开局挫败")
+        report.append("   - **可接受**: 0.7-0.99（后期难点），渐进式挑战")
+        report.append("   - **特殊情况**: DifficultyPosition=1（无明显难点）适合休闲体验")
+        report.append("5. 建议结合A/B测试验证统计分析结果")
+
+        report.append("\n### ⚠️ 注意事项:")
+        report.append("- 本分析基于历史数据，结果需要在实际环境中验证")
+        report.append("- 统计显著性不等于实际显著性，需要结合游戏设计目标判断")
+        report.append("- 配置调整应该渐进式进行，避免大幅变动影响玩家体验")
+        report.append("- 建议定期重新分析以适应游戏发展和玩家行为变化")
 
     def _add_value_specific_report(self, report):
         """添加单一数值深度分析报告"""
@@ -1412,8 +1745,8 @@ class ExperienceConfigAnalyzer:
                         # Dock影响
                         if 'dock_impact' in pos_data:
                             dock_data = pos_data['dock_impact']
-                            if 'avg_sequence_length' in dock_data:
-                                report.append(f"- **游戏时长**: 平均{dock_data['avg_sequence_length']:.1f}步")
+                            if 'total_sequences' in dock_data:
+                                report.append(f"- **序列数量**: {dock_data['total_sequences']}个")
 
                         # 压力影响
                         if 'pressure_impact' in pos_data:
@@ -1490,7 +1823,6 @@ class ExperienceConfigAnalyzer:
                         value_analysis = pos_data[value_key]
                         if 'patterns' in value_analysis and 'pattern_type' in value_analysis['patterns']:
                             pattern_type = value_analysis['patterns']['pattern_type']
-                            avg_length = value_analysis['avg_length']
 
                             if pattern_type != 'insufficient_data':
                                 pattern_name = {
@@ -1499,7 +1831,7 @@ class ExperienceConfigAnalyzer:
                                     'stable_pressure': '压力稳定型'
                                 }.get(pattern_type, pattern_type)
 
-                                report.append(f"- **数值{value}**: {pattern_name}, 平均时长{avg_length:.1f}步")
+                                report.append(f"- **数值{value}**: {pattern_name}")
 
                 report.append("")
 
@@ -1654,7 +1986,7 @@ class ExperienceConfigAnalyzer:
         fig, axes = plt.subplots(2, 2, figsize=(15, 12))
         patterns = self.results['patterns']['sequence_patterns']
 
-        metrics = ['DifficultyScore', 'PeakDockCount', 'PressureValueMean', 'TotalMoves']
+        metrics = ['DifficultyScore', 'PeakDockCount', 'PressureValueMean']
 
         for idx, metric in enumerate(metrics):
             ax = axes[idx//2, idx%2]
@@ -1934,57 +2266,105 @@ class ExperienceConfigAnalyzer:
         plt.savefig(output_path / 'gradient_curves.png', dpi=300, bbox_inches='tight')
         plt.close()
 
+    def _plot_difficulty_position_analysis(self, output_path: Path):
+        """绘制DifficultyPosition影响分析图"""
+        if 'difficulty_position_effects' not in self.results:
+            return
+
+        fig, axes = plt.subplots(2, 3, figsize=(18, 12))
+
+        # 上排：每个位置对DifficultyPosition的影响
+        for i, pos in enumerate(['pos1', 'pos2', 'pos3']):
+            if pos in self.results['difficulty_position_effects']:
+                pos_data = self.results['difficulty_position_effects'][pos]
+
+                if 'value_effects' in pos_data and pos_data['value_effects']:
+                    values = list(pos_data['value_effects'].keys())
+                    means = [pos_data['value_effects'][v]['mean'] for v in values]
+                    stds = [pos_data['value_effects'][v]['std'] for v in values]
+
+                    bars = axes[0, i].bar(values, means, yerr=stds, alpha=0.7, capsize=5)
+                    axes[0, i].set_xlabel(f'{pos}数值')
+                    axes[0, i].set_ylabel('DifficultyPosition平均值')
+                    axes[0, i].set_title(f'{pos}对DifficultyPosition的影响')
+                    axes[0, i].grid(True, alpha=0.3)
+
+                    # 添加数值标签
+                    for bar, mean in zip(bars, means):
+                        axes[0, i].text(bar.get_x() + bar.get_width()/2,
+                                       bar.get_height() + bar.get_height()*0.01,
+                                       f'{mean:.2f}', ha='center', va='bottom', fontsize=8)
+
+        # 下排：交互效应分析
+        if 'interaction_effects' in self.results['difficulty_position_effects']:
+            interaction_data = self.results['difficulty_position_effects']['interaction_effects']
+
+            if interaction_data:
+                pairs = list(interaction_data.keys())
+                gains = [interaction_data[pair]['interaction_gain'] for pair in pairs]
+
+                # 合并下排三个子图为一个大图
+                ax_combined = plt.subplot(2, 1, 2)
+                bars = ax_combined.bar(pairs, gains, alpha=0.7,
+                                     color=['red' if g > 0 else 'blue' for g in gains])
+                ax_combined.set_xlabel('位置组合')
+                ax_combined.set_ylabel('交互效应增益')
+                ax_combined.set_title('DifficultyPosition交互效应分析')
+                ax_combined.axhline(y=0, color='black', linestyle='--', alpha=0.5)
+                ax_combined.grid(True, alpha=0.3)
+
+                # 添加数值标签
+                for bar, gain in zip(bars, gains):
+                    ax_combined.text(bar.get_x() + bar.get_width()/2,
+                                   bar.get_height() + (0.01 if gain > 0 else -0.03),
+                                   f'{gain:.4f}', ha='center',
+                                   va='bottom' if gain > 0 else 'top', fontsize=9)
+
+                # 隐藏下排原有的三个子图
+                for i in range(3):
+                    axes[1, i].set_visible(False)
+
+        plt.suptitle('DifficultyPosition位置影响分析', fontsize=16, fontweight='bold')
+        plt.tight_layout()
+        plt.savefig(output_path / 'difficulty_position_analysis.png', dpi=300, bbox_inches='tight')
+        plt.close()
+
     def _plot_dock_sequence_patterns(self, output_path: Path):
         """绘制Dock序列模式图"""
         if 'dock_deep_analysis' not in self.results:
             return
 
-        fig, axes = plt.subplots(2, 3, figsize=(18, 12))
+        fig, axes = plt.subplots(1, 3, figsize=(18, 6))
 
-        # 为每个位置绘制不同数值的序列模式
+        # 为每个位置绘制不同数值的成功率分析
         colors = plt.cm.Set3(np.linspace(0, 1, 9))
 
         for pos_idx, pos in enumerate(['pos1', 'pos2', 'pos3']):
             if pos in self.results['dock_deep_analysis']:
                 pos_data = self.results['dock_deep_analysis'][pos]
 
-                # 上方图: 平均序列长度
-                lengths = []
+                # 成功率分析
                 success_rates = []
                 values = []
 
                 for value in range(1, 10):
                     value_key = f'value_{value}'
                     if value_key in pos_data:
-                        lengths.append(pos_data[value_key]['avg_length'])
                         success_rates.append(pos_data[value_key]['success_rate'])
                         values.append(value)
 
-                if lengths:
-                    bars = axes[0, pos_idx].bar(values, lengths, color=colors[:len(values)], alpha=0.7)
-                    axes[0, pos_idx].set_xlabel('配置数值')
-                    axes[0, pos_idx].set_ylabel('平均序列长度')
-                    axes[0, pos_idx].set_title(f'{pos} - 平均游戏时长')
-
-                    # 添加数值标签
-                    for bar, length in zip(bars, lengths):
-                        axes[0, pos_idx].text(bar.get_x() + bar.get_width()/2,
-                                            bar.get_height() + bar.get_height()*0.01,
-                                            f'{length:.1f}', ha='center', va='bottom')
-
-                # 下方图: 成功率
                 if success_rates:
-                    bars = axes[1, pos_idx].bar(values, success_rates, color=colors[:len(values)], alpha=0.7)
-                    axes[1, pos_idx].set_xlabel('配置数值')
-                    axes[1, pos_idx].set_ylabel('成功率')
-                    axes[1, pos_idx].set_title(f'{pos} - 胜率表现')
-                    axes[1, pos_idx].set_ylim(0, 1)
+                    bars = axes[pos_idx].bar(values, success_rates, color=colors[:len(values)], alpha=0.7)
+                    axes[pos_idx].set_xlabel('配置数值')
+                    axes[pos_idx].set_ylabel('成功率')
+                    axes[pos_idx].set_title(f'{pos} - 胜率表现')
+                    axes[pos_idx].set_ylim(0, 1)
 
                     # 添加数值标签
                     for bar, rate in zip(bars, success_rates):
-                        axes[1, pos_idx].text(bar.get_x() + bar.get_width()/2,
-                                            bar.get_height() + 0.02,
-                                            f'{rate:.3f}', ha='center', va='bottom')
+                        axes[pos_idx].text(bar.get_x() + bar.get_width()/2,
+                                          bar.get_height() + 0.02,
+                                          f'{rate:.3f}', ha='center', va='bottom')
 
         plt.suptitle('Dock序列模式与成功率分析', fontsize=16, fontweight='bold')
         plt.tight_layout()
