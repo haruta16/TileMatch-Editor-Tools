@@ -17,7 +17,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import r2_score, mean_squared_error
 from sklearn.preprocessing import StandardScaler
 from scipy import stats
-from scipy.stats import pearsonr, spearmanr
+from scipy.stats import pearsonr, spearmanr, f_oneway
 import warnings
 import os
 import sys
@@ -334,19 +334,49 @@ class ExperienceConfigAnalyzer:
 
         correlations = {}
 
-        # 位置独立相关性
+        # 位置独立效应分析（基于ANOVA，因为配置数值是分类变量）
         position_corrs = {}
         for pos in ['pos1', 'pos2', 'pos3']:
             pos_corrs = {}
             for metric in self.target_metrics:
                 if metric in self.data.columns:
-                    corr, p_value = pearsonr(self.features[pos], self.data[metric])
-                    pos_corrs[metric] = {
-                        'correlation': corr,
-                        'p_value': p_value,
-                        'significant': p_value < 0.05,
-                        'effect_size': abs(corr)
-                    }
+                    # 将配置数值作为分类变量，对每个配置值计算指标的分布
+                    groups = []
+                    for value in range(1, 10):
+                        group_data = self.data[self.features[pos] == value][metric].dropna()
+                        if len(group_data) > 0:
+                            groups.append(group_data)
+
+                    if len(groups) > 1:
+                        # 使用ANOVA F检验分析配置值对指标的影响
+                        f_stat, p_value = f_oneway(*groups)
+
+                        # 计算eta squared作为效应量
+                        total_variance = np.var(self.data[metric].dropna())
+                        eta_squared = 0
+                        if total_variance > 0:
+                            # 计算组间方差占总方差的比例
+                            group_means = [group.mean() for group in groups]
+                            group_sizes = [len(group) for group in groups]
+                            overall_mean = self.data[metric].dropna().mean()
+                            between_group_variance = sum(size * (mean - overall_mean)**2 for size, mean in zip(group_sizes, group_means)) / sum(group_sizes)
+                            eta_squared = between_group_variance / total_variance
+
+                        pos_corrs[metric] = {
+                            'f_statistic': f_stat,
+                            'p_value': p_value,
+                            'significant': p_value < 0.05,
+                            'effect_size': eta_squared,
+                            'interpretation': 'ANOVA F-test for categorical config values'
+                        }
+                    else:
+                        pos_corrs[metric] = {
+                            'f_statistic': 0,
+                            'p_value': 1.0,
+                            'significant': False,
+                            'effect_size': 0,
+                            'interpretation': 'Insufficient data for analysis'
+                        }
             position_corrs[pos] = pos_corrs
 
         correlations['position_correlations'] = position_corrs
@@ -398,14 +428,43 @@ class ExperienceConfigAnalyzer:
 
             pos_effects['value_effects'] = value_effects
 
-            # 计算相关性
+            # 计算效应（使用ANOVA，因为配置数值是分类变量）
             if len(self.features[pos]) > 0 and len(self.data['DifficultyPosition'].dropna()) > 0:
-                corr, p_value = pearsonr(self.features[pos], self.data['DifficultyPosition'].fillna(0))
-                pos_effects['correlation'] = {
-                    'correlation': corr,
-                    'p_value': p_value,
-                    'significant': p_value < 0.05
-                }
+                # 将配置数值作为分类变量进行ANOVA分析
+                groups = []
+                for value in range(1, 10):
+                    group_data = self.data[self.features[pos] == value]['DifficultyPosition'].dropna()
+                    if len(group_data) > 0:
+                        groups.append(group_data)
+
+                if len(groups) > 1:
+                    f_stat, p_value = f_oneway(*groups)
+
+                    # 计算效应量eta squared
+                    total_variance = np.var(self.data['DifficultyPosition'].dropna())
+                    eta_squared = 0
+                    if total_variance > 0:
+                        group_means = [group.mean() for group in groups]
+                        group_sizes = [len(group) for group in groups]
+                        overall_mean = self.data['DifficultyPosition'].dropna().mean()
+                        between_group_variance = sum(size * (mean - overall_mean)**2 for size, mean in zip(group_sizes, group_means)) / sum(group_sizes)
+                        eta_squared = between_group_variance / total_variance
+
+                    pos_effects['effect_analysis'] = {
+                        'f_statistic': f_stat,
+                        'p_value': p_value,
+                        'significant': p_value < 0.05,
+                        'effect_size': eta_squared,
+                        'interpretation': 'ANOVA F-test for categorical position effect'
+                    }
+                else:
+                    pos_effects['effect_analysis'] = {
+                        'f_statistic': 0,
+                        'p_value': 1.0,
+                        'significant': False,
+                        'effect_size': 0,
+                        'interpretation': 'Insufficient data for analysis'
+                    }
 
             # 找出最佳和最差配置（基于0-1范围：0=最前，0.99=最后，1=无难点）
             if value_effects:
@@ -1621,14 +1680,10 @@ class ExperienceConfigAnalyzer:
         report.append("**体验设计原则：** 四阶段均匀分布，每个阶段占25%的游戏进程。")
         report.append("")
 
-        # 计算全局统计
-        all_positions = []
-        for pos in ['pos1', 'pos2', 'pos3']:
-            if pos in self.results['difficulty_position_effects'] and 'value_effects' in self.results['difficulty_position_effects'][pos]:
-                for value, stats in self.results['difficulty_position_effects'][pos]['value_effects'].items():
-                    all_positions.extend([stats['mean']] * stats['count'])
+        # 计算全局统计 - 使用实际的原始DifficultyPosition数据点
+        all_positions = self.data['DifficultyPosition'].dropna().values
 
-        if all_positions:
+        if len(all_positions) > 0:
             global_mean = np.mean(all_positions)
             global_std = np.std(all_positions)
             stage1_ratio = sum(1 for p in all_positions if p < 0.25) / len(all_positions)
@@ -1653,16 +1708,17 @@ class ExperienceConfigAnalyzer:
                 pos_data = self.results['difficulty_position_effects'][pos]
                 report.append(f"### 🎯 {pos.upper()}位置的DifficultyPosition影响详析")
 
-                # 相关性分析
-                if 'correlation' in pos_data:
-                    corr_data = pos_data['correlation']
-                    significance = "统计显著" if corr_data['significant'] else "统计不显著"
-                    corr_strength = "强相关" if abs(corr_data['correlation']) > 0.5 else "中等相关" if abs(corr_data['correlation']) > 0.3 else "弱相关"
-                    corr_direction = "正相关(数值越大难点越靠后)" if corr_data['correlation'] > 0 else "负相关(数值越大难点越靠前)"
+                # 效应分析（ANOVA）
+                if 'effect_analysis' in pos_data:
+                    effect_data = pos_data['effect_analysis']
+                    significance = "统计显著" if effect_data['significant'] else "统计不显著"
+                    effect_strength = "强效应" if effect_data['effect_size'] > 0.14 else "中等效应" if effect_data['effect_size'] > 0.06 else "弱效应"
 
-                    report.append(f"**总体相关性分析：**")
-                    report.append(f"- 相关系数: {corr_data['correlation']:.3f} ({corr_strength}，{corr_direction})")
-                    report.append(f"- 显著性: p={corr_data['p_value']:.3f} ({significance})")
+                    report.append(f"**总体效应分析（ANOVA）：**")
+                    report.append(f"- F统计量: {effect_data['f_statistic']:.3f}")
+                    report.append(f"- 效应量(η²): {effect_data['effect_size']:.3f} ({effect_strength})")
+                    report.append(f"- 显著性: p={effect_data['p_value']:.3f} ({significance})")
+                    report.append(f"- 说明: 配置数值作为分类变量对DifficultyPosition的影响")
                     report.append("")
 
                 # 详细的数值效应分析
@@ -1915,12 +1971,12 @@ class ExperienceConfigAnalyzer:
         if 'correlations' in self.results:
             pos_importance = {}
             for pos in ['pos1', 'pos2', 'pos3']:
-                avg_abs_corr = np.mean([
-                    abs(self.results['correlations']['position_correlations'][pos][m]['correlation'])
+                avg_effect_size = np.mean([
+                    self.results['correlations']['position_correlations'][pos][m]['effect_size']
                     for m in ['DifficultyScore', 'PeakDockCount', 'PressureValueMean']
                     if m in self.results['correlations']['position_correlations'][pos]
                 ])
-                pos_importance[pos] = avg_abs_corr
+                pos_importance[pos] = avg_effect_size
 
             sorted_positions = sorted(pos_importance.items(), key=lambda x: x[1], reverse=True)
             report.append("### 主要发现:")
@@ -2062,12 +2118,12 @@ class ExperienceConfigAnalyzer:
         if 'correlations' in self.results:
             pos_importance = {}
             for pos in ['pos1', 'pos2', 'pos3']:
-                avg_abs_corr = np.mean([
-                    abs(self.results['correlations']['position_correlations'][pos][m]['correlation'])
+                avg_effect_size = np.mean([
+                    self.results['correlations']['position_correlations'][pos][m]['effect_size']
                     for m in ['DifficultyScore', 'PeakDockCount', 'PressureValueMean']
                     if m in self.results['correlations']['position_correlations'][pos]
                 ])
-                pos_importance[pos] = avg_abs_corr
+                pos_importance[pos] = avg_effect_size
 
             sorted_positions = sorted(pos_importance.items(), key=lambda x: x[1], reverse=True)
             print(f"🎯 位置重要性排序: {' > '.join([f'{p}({v:.3f})' for p, v in sorted_positions])}")
@@ -2115,16 +2171,17 @@ class ExperienceConfigAnalyzer:
             for metric in metrics:
                 if pos in self.results['correlations']['position_correlations'] and \
                    metric in self.results['correlations']['position_correlations'][pos]:
-                    corr = self.results['correlations']['position_correlations'][pos][metric]['correlation']
-                    pos_corrs.append(corr)
+                    # 使用效应量(eta squared)来替代相关系数，因为我们现在使用ANOVA
+                    effect_size = self.results['correlations']['position_correlations'][pos][metric]['effect_size']
+                    pos_corrs.append(effect_size)
                 else:
                     pos_corrs.append(0)
             corr_matrix.append(pos_corrs)
 
         corr_matrix = np.array(corr_matrix)
 
-        # 绘制热力图
-        im = ax.imshow(corr_matrix, cmap='RdBu_r', vmin=-1, vmax=1, aspect='auto')
+        # 绘制热力图（使用效应量，范围0-1）
+        im = ax.imshow(corr_matrix, cmap='Reds', vmin=0, vmax=1, aspect='auto')
 
         # 设置标签
         ax.set_xticks(range(len(metrics)))
@@ -2139,9 +2196,9 @@ class ExperienceConfigAnalyzer:
         for i in range(len(positions)):
             for j in range(len(metrics)):
                 ax.text(j, i, f'{corr_matrix[i, j]:.3f}',
-                       ha='center', va='center', color='white' if abs(corr_matrix[i, j]) > 0.5 else 'black')
+                       ha='center', va='center', color='white' if corr_matrix[i, j] > 0.5 else 'black')
 
-        plt.title('Position-Metric Correlation Heatmap')
+        plt.title('Position-Metric Effect Size Heatmap (η²)')
         plt.tight_layout()
         plt.savefig(output_path / 'position_correlation_heatmap.png', dpi=300, bbox_inches='tight')
         plt.close()
