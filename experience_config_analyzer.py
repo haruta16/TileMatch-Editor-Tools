@@ -20,14 +20,30 @@ from scipy import stats
 from scipy.stats import pearsonr, spearmanr
 import warnings
 import os
+import sys
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional
 import json
 
 # 设置中文字体和样式 - 修复中文显示问题
-plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'DejaVu Sans', 'Arial Unicode MS']
-plt.rcParams['axes.unicode_minus'] = False
+import sys
+# 检查操作系统并设置合适的中文字体
+if sys.platform.startswith('win'):
+    # Windows系统字体配置
+    plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'KaiTi', 'FangSong']
+elif sys.platform.startswith('darwin'):
+    # macOS系统字体配置
+    plt.rcParams['font.sans-serif'] = ['PingFang SC', 'Hiragino Sans GB', 'STHeiti', 'Arial Unicode MS']
+else:
+    # Linux系统字体配置
+    plt.rcParams['font.sans-serif'] = ['Noto Sans CJK SC', 'WenQuanYi Micro Hei', 'DejaVu Sans']
+
+plt.rcParams['axes.unicode_minus'] = False  # 正确显示负号
 plt.rcParams['font.size'] = 10
+plt.rcParams['figure.max_open_warning'] = 0  # 关闭图表数量警告
+# 设置matplotlib后端为Agg，避免GUI相关问题
+import matplotlib
+matplotlib.use('Agg')
 sns.set_style("whitegrid")
 warnings.filterwarnings('ignore')
 
@@ -83,7 +99,7 @@ class ExperienceConfigAnalyzer:
 
     def load_and_preprocess(self) -> 'ExperienceConfigAnalyzer':
         """加载数据并进行预处理"""
-        print("📊 加载和预处理数据...")
+        print("📊 加载和预处理数据...", flush=True)
 
         if self.csv_path:
             # 单文件模式
@@ -113,14 +129,15 @@ class ExperienceConfigAnalyzer:
         if not self.csv_files:
             raise FileNotFoundError(f"在目录 {csv_dir} 中未找到CSV文件")
 
-        print(f"🔍 发现{len(self.csv_files)}个CSV文件，准备批量加载...")
+        print(f"🔍 发现{len(self.csv_files)}个CSV文件，准备批量加载...", flush=True)
 
         # 简单直接加载，一个文件一个文件处理
         data_list = []
         total_rows = 0
 
         for i, csv_file in enumerate(self.csv_files):
-            print(f"   正在加载 {csv_file.name}... ({i+1}/{len(self.csv_files)})")
+            print(f"   正在加载 {csv_file.name}... ({i+1}/{len(self.csv_files)})", flush=True)
+            sys.stdout.flush()
 
             try:
                 # 直接读取，不分块
@@ -137,7 +154,7 @@ class ExperienceConfigAnalyzer:
             raise ValueError("所有CSV文件都加载失败")
 
         # 合并所有数据
-        print("🔗 合并所有数据...")
+        print("🔗 合并所有数据...", flush=True)
         self.data = pd.concat(data_list, ignore_index=True)
 
         print(f"✅ 批量数据加载完成: 总计{total_rows}条记录，合并后{len(self.data)}条记录")
@@ -152,7 +169,7 @@ class ExperienceConfigAnalyzer:
             self.data['pos3'] = 3
             return
 
-        print("🔧 解析体验模式配置...")
+        print("🔧 解析体验模式配置...", flush=True)
 
         # 使用最简单的解析方式，避免复杂的apply操作
         pos1_list = []
@@ -313,7 +330,7 @@ class ExperienceConfigAnalyzer:
 
     def correlation_analysis(self) -> Dict:
         """基础相关性分析"""
-        print("🔗 执行基础相关性分析...")
+        print("🔗 执行基础相关性分析...", flush=True)
 
         correlations = {}
 
@@ -351,7 +368,7 @@ class ExperienceConfigAnalyzer:
 
     def difficulty_position_analysis(self) -> Dict:
         """DifficultyPosition位置影响分析 - 分析不同体验配置在不同位置对DifficultyPosition的影响"""
-        print("🏆 执行DifficultyPosition位置影响分析...")
+        print("🏆 执行DifficultyPosition位置影响分析...", flush=True)
 
         position_effects = {}
 
@@ -510,7 +527,7 @@ class ExperienceConfigAnalyzer:
 
     def position_independent_analysis(self) -> Dict:
         """位置独立影响分析 - 控制其他变量分析单个位置的纯净效应"""
-        print("🎯 执行位置独立影响分析...")
+        print("🎯 执行位置独立影响分析...", flush=True)
 
         independent_effects = {}
 
@@ -550,7 +567,7 @@ class ExperienceConfigAnalyzer:
 
     def interaction_analysis(self) -> Dict:
         """位置交互效应分析 - 分析位置间相互作用"""
-        print("🔄 执行位置交互效应分析...")
+        print("🔄 执行位置交互效应分析...", flush=True)
 
         interaction_effects = {}
 
@@ -594,7 +611,7 @@ class ExperienceConfigAnalyzer:
 
     def dynamic_impact_analysis(self) -> Dict:
         """动态影响分析 - 分析位置在不同游戏阶段的差异化影响"""
-        print("⏱️ 执行动态影响分析...")
+        print("⏱️ 执行动态影响分析...", flush=True)
 
         dynamic_effects = {}
 
@@ -644,7 +661,7 @@ class ExperienceConfigAnalyzer:
 
     def mechanism_analysis(self) -> Dict:
         """影响机制分析 - 分析位置影响指标的中介路径"""
-        print("🔍 执行影响机制分析...")
+        print("🔍 执行影响机制分析...", flush=True)
 
         mechanism_effects = {}
 
@@ -1273,7 +1290,7 @@ class ExperienceConfigAnalyzer:
 
     def create_enhanced_visualizations(self, output_dir: str = None):
         """创建增强可视化图表"""
-        print("📊 创建增强可视化图表...")
+        print("📊 创建增强可视化图表...", flush=True)
 
         if output_dir is None:
             # 多文件模式使用csv_directory，单文件模式使用csv_path
@@ -1305,10 +1322,10 @@ class ExperienceConfigAnalyzer:
         successful_charts = 0
         for chart_name, chart_func in charts:
             try:
-                print(f"   绘制 {chart_name}...")
+                print(f"   绘制 {chart_name}...", end='', flush=True)
                 chart_func(output_path)
                 successful_charts += 1
-                print(f"   ✅ {chart_name} 完成")
+                print(f" ✅ 完成", flush=True)
             except Exception as e:
                 print(f"   ❌ {chart_name} 失败: {str(e)}")
                 continue
@@ -1454,7 +1471,7 @@ class ExperienceConfigAnalyzer:
 
     def generate_enhanced_report(self, output_path: str = None) -> str:
         """生成增强版分析报告"""
-        print("📋 生成深度分析报告...")
+        print("📋 生成深度分析报告...", flush=True)
 
         if output_path is None:
             # 多文件模式使用csv_directory，单文件模式使用csv_path
@@ -1585,78 +1602,324 @@ class ExperienceConfigAnalyzer:
                 report.append(f"- **{stage_name}**: 相关性 {corr:.3f}")
 
     def _add_difficulty_position_effects_report(self, report):
-        """添加DifficultyPosition影响分析报告"""
+        """添加DifficultyPosition影响分析报告 - 增强版"""
         if 'difficulty_position_effects' not in self.results:
             return
 
-        report.append("\n## 🏆 DifficultyPosition影响分析\n")
-        report.append("### 📝 分析说明")
-        report.append("DifficultyPosition表示关卡流程内难点出现的位置，是衡量游戏体验节奏的")
-        report.append("重要指标。数值含义如下：")
-        report.append("- **DifficultyPosition = 0**: 难点在游戏最前面，开局即遇到困难")
-        report.append("- **DifficultyPosition = 0.1-0.3**: 难点在游戏前期出现")
-        report.append("- **DifficultyPosition = 0.4-0.7**: 难点在游戏中期出现")
-        report.append("- **DifficultyPosition = 0.8-0.99**: 难点在游戏后期出现")
-        report.append("- **DifficultyPosition = 1**: 无明显难点位置，体验相对平均")
-        report.append("理想情况下，应该避免难点过早出现（避免开局挫败），适中的难点位置能提供良好的挑战节奏。\n")
+        report.append("\n## 🏆 DifficultyPosition影响分析 (增强版)\n")
+        report.append("### 📝 指标说明与重要性")
+        report.append("**DifficultyPosition** 是游戏体验设计中的核心指标，反映难点在游戏流程中的出现位置。")
+        report.append("该指标直接影响玩家的体验节奏、挫败感和成就感的分布：")
+        report.append("")
+        report.append("**数值含义深度解析：**")
+        report.append("- **0.00-0.15**: 极早期难点 - 开局即困难，容易造成早期挫败和流失")
+        report.append("- **0.15-0.35**: 前期难点 - 学习阶段遇阻，影响新手体验和留存")
+        report.append("- **0.35-0.65**: 中期难点 - 理想区间，提供渐进式挑战和成长感")
+        report.append("- **0.65-0.85**: 后期难点 - 高级挑战，适合有经验的玩家")
+        report.append("- **0.85-0.99**: 极后期难点 - 终极挑战，可能影响通关率")
+        report.append("- **1.00**: 无明显难点 - 体验平滑，可能缺乏挑战性")
+        report.append("")
+        report.append("**体验设计原则：** 最佳实践是将难点控制在0.4-0.7范围内，避免过早(≤0.3)或过晚(≥0.8)的极端分布。")
+        report.append("")
 
+        # 计算全局统计
+        all_positions = []
+        for pos in ['pos1', 'pos2', 'pos3']:
+            if pos in self.results['difficulty_position_effects'] and 'value_effects' in self.results['difficulty_position_effects'][pos]:
+                for value, stats in self.results['difficulty_position_effects'][pos]['value_effects'].items():
+                    all_positions.extend([stats['mean']] * stats['count'])
+
+        if all_positions:
+            global_mean = np.mean(all_positions)
+            global_std = np.std(all_positions)
+            early_ratio = sum(1 for p in all_positions if p < 0.35) / len(all_positions)
+            mid_ratio = sum(1 for p in all_positions if 0.35 <= p < 0.65) / len(all_positions)
+            late_ratio = sum(1 for p in all_positions if 0.65 <= p < 1.0) / len(all_positions)
+            perfect_ratio = sum(1 for p in all_positions if abs(p - 1.0) < 0.01) / len(all_positions)
+
+            report.append("### 📊 全局DifficultyPosition分布特征")
+            report.append(f"- **整体均值**: {global_mean:.3f} ({'理想范围' if 0.4 <= global_mean <= 0.7 else '需要调整'})")
+            report.append(f"- **标准差**: {global_std:.3f} ({'变化适中' if global_std < 0.3 else '变化较大'})")
+            report.append(f"- **前期难点占比**: {early_ratio:.1%} ({'过高，影响留存' if early_ratio > 0.3 else '合理'})")
+            report.append(f"- **中期难点占比**: {mid_ratio:.1%} ({'理想' if mid_ratio > 0.4 else '可以增加'})")
+            report.append(f"- **后期难点占比**: {late_ratio:.1%} ({'适中' if late_ratio < 0.4 else '可能过于困难'})")
+            report.append(f"- **无难点占比**: {perfect_ratio:.1%} ({'需要增加挑战' if perfect_ratio > 0.2 else '挑战性充足'})")
+            report.append("")
+
+        # 详细的位置影响分析
         for pos in ['pos1', 'pos2', 'pos3']:
             if pos in self.results['difficulty_position_effects']:
                 pos_data = self.results['difficulty_position_effects'][pos]
-                report.append(f"### {pos}对DifficultyPosition的影响:")
+                report.append(f"### 🎯 {pos.upper()}位置的DifficultyPosition影响详析")
 
                 # 相关性分析
                 if 'correlation' in pos_data:
                     corr_data = pos_data['correlation']
-                    significance = "显著" if corr_data['significant'] else "不显著"
-                    report.append(f"- **相关性**: {corr_data['correlation']:.3f} (p={corr_data['p_value']:.3f}, {significance})")
+                    significance = "统计显著" if corr_data['significant'] else "统计不显著"
+                    corr_strength = "强相关" if abs(corr_data['correlation']) > 0.5 else "中等相关" if abs(corr_data['correlation']) > 0.3 else "弱相关"
+                    corr_direction = "正相关(数值越大难点越靠后)" if corr_data['correlation'] > 0 else "负相关(数值越大难点越靠前)"
 
-                # 推荐和不推荐配置
-                if 'best_config' in pos_data and 'worst_config' in pos_data:
-                    best = pos_data['best_config']
-                    worst = pos_data['worst_config']
-                    report.append(f"- **推荐配置**: 数值{best['value']} (DifficultyPosition: {best['mean_difficulty_position']:.3f}, {best['description']})")
-                    report.append(f"- **不推荐配置**: 数值{worst['value']} (DifficultyPosition: {worst['mean_difficulty_position']:.3f}, {worst['description']})")
+                    report.append(f"**总体相关性分析：**")
+                    report.append(f"- 相关系数: {corr_data['correlation']:.3f} ({corr_strength}，{corr_direction})")
+                    report.append(f"- 显著性: p={corr_data['p_value']:.3f} ({significance})")
+                    report.append("")
 
-                # 各类配置分布
-                categories = ['no_difficulty', 'early_difficulty', 'mid_difficulty', 'late_difficulty']
-                for category in categories:
-                    config_key = f'{category}_configs'
+                # 详细的数值效应分析
+                if 'value_effects' in pos_data:
+                    value_effects = pos_data['value_effects']
+
+                    report.append(f"**{pos.upper()}各数值配置的DifficultyPosition影响详表：**")
+                    report.append("| 配置值 | 平均位置 | 标准差 | 中位数 | 样本数 | 位置特征 | 体验评价 |")
+                    report.append("|--------|----------|--------|--------|--------|----------|----------|")
+
+                    for value in sorted(value_effects.keys()):
+                        stats = value_effects[value]
+                        mean_pos = stats['mean']
+
+                        # 位置特征描述
+                        if mean_pos < 0.15:
+                            pos_feature = "极早期难点"
+                            experience_eval = "⚠️ 高风险"
+                        elif mean_pos < 0.35:
+                            pos_feature = "前期难点"
+                            experience_eval = "⚠️ 需注意"
+                        elif mean_pos < 0.65:
+                            pos_feature = "中期难点"
+                            experience_eval = "✅ 理想"
+                        elif mean_pos < 0.85:
+                            pos_feature = "后期难点"
+                            experience_eval = "🔶 适中"
+                        elif mean_pos < 1.0:
+                            pos_feature = "极后期难点"
+                            experience_eval = "⚠️ 可能过难"
+                        else:
+                            pos_feature = "无明显难点"
+                            experience_eval = "🔶 缺乏挑战"
+
+                        report.append(f"| {value} | {mean_pos:.3f} | {stats['std']:.3f} | {stats['median']:.3f} | {stats['count']} | {pos_feature} | {experience_eval} |")
+
+                    report.append("")
+
+                # 配置推荐分析 - 基于数据特征而非简单推荐/不推荐
+                if 'value_effects' in pos_data:
+                    # 按照DifficultyPosition进行排序和分类
+                    sorted_configs = sorted(value_effects.items(), key=lambda x: x[1]['mean'])
+
+                    report.append(f"**{pos.upper()}配置效果排序分析 (按DifficultyPosition从早到晚)：**")
+
+                    for i, (value, stats) in enumerate(sorted_configs):
+                        rank = i + 1
+                        mean_pos = stats['mean']
+                        sample_count = stats['count']
+
+                        # 详细的特征描述
+                        if mean_pos < 0.3:
+                            characteristic = f"使难点过早出现(位置{mean_pos:.3f})，可能导致前期挫败感过强"
+                            recommendation = "不推荐用于新手友好的关卡设计"
+                        elif mean_pos < 0.4:
+                            characteristic = f"使难点在前中期出现(位置{mean_pos:.3f})，挑战来得相对较早"
+                            recommendation = "适合有一定基础的玩家，需谨慎使用"
+                        elif mean_pos < 0.6:
+                            characteristic = f"使难点在中期出现(位置{mean_pos:.3f})，符合渐进式挑战原则"
+                            recommendation = "推荐配置，能提供良好的挑战节奏"
+                        elif mean_pos < 0.8:
+                            characteristic = f"使难点在后期出现(位置{mean_pos:.3f})，挑战相对较晚"
+                            recommendation = "适合构建层次感，但需注意不要过于简单"
+                        elif mean_pos < 1.0:
+                            characteristic = f"使难点在极后期出现(位置{mean_pos:.3f})，前期体验可能过于简单"
+                            recommendation = "谨慎使用，可能导致前期体验平淡"
+                        else:
+                            characteristic = f"使关卡缺乏明显难点(位置{mean_pos:.3f})，体验相对平滑"
+                            recommendation = "适合休闲向设计，但可能缺乏挑战性"
+
+                        confidence = "高置信度" if sample_count > 100 else "中置信度" if sample_count > 30 else "低置信度"
+
+                        report.append(f"{rank}. **配置值{value}**: {characteristic}")
+                        report.append(f"   - 设计建议: {recommendation}")
+                        report.append(f"   - 数据置信度: {confidence} (样本数:{sample_count})")
+                        report.append("")
+
+                # 配置分类统计 - 增强版
+                categories = [
+                    ('no_difficulty', '无明显难点配置', '体验平滑但可能缺乏挑战'),
+                    ('early_difficulty', '前期难点配置', '开局挑战型，需注意挫败感控制'),
+                    ('mid_difficulty', '中期难点配置', '渐进式挑战，推荐的体验节奏'),
+                    ('late_difficulty', '后期难点配置', '后发制人型，适合构建层次感')
+                ]
+
+                report.append(f"**{pos.upper()}配置类型分布统计：**")
+                for category_key, category_name, category_desc in categories:
+                    config_key = f'{category_key}_configs'
                     if config_key in pos_data:
                         config_info = pos_data[config_key]
-                        values_str = ', '.join(map(str, config_info['values']))
+                        values_str = ', '.join(map(str, sorted(config_info['values'])))
                         avg_pos = config_info['avg_position']
-                        report.append(f"- **{config_info['description']}**: 数值{values_str} (共{config_info['count']}个，平均位置{avg_pos:.3f})")
+                        count = config_info['count']
+                        proportion = count / len(value_effects) if value_effects else 0
 
-        # 交互效应
+                        report.append(f"- **{category_name}** ({proportion:.1%}): 配置值[{values_str}]")
+                        report.append(f"  - 平均DifficultyPosition: {avg_pos:.3f}")
+                        report.append(f"  - 设计特点: {category_desc}")
+                        report.append("")
+
+        # 交互效应分析 - 增强版
         if 'interaction_effects' in self.results['difficulty_position_effects']:
             interaction_data = self.results['difficulty_position_effects']['interaction_effects']
             if interaction_data:
-                report.append("\n### DifficultyPosition交互效应:")
-                for pair, data in interaction_data.items():
-                    gain = data['interaction_gain']
-                    report.append(f"- **{pair}**: 交互增益 {gain:.4f}")
+                report.append("### 🔄 位置间交互效应对DifficultyPosition的影响")
+                report.append("**交互效应说明**: 衡量不同位置配置组合时产生的协同或冲突效应，正值表示协同增强，负值表示相互抵消。")
+                report.append("")
 
+                sorted_interactions = sorted(interaction_data.items(), key=lambda x: x[1]['interaction_gain'], reverse=True)
+
+                for pair, data in sorted_interactions:
+                    gain = data['interaction_gain']
+                    r2_base = data['r2_base']
+                    r2_inter = data['r2_interaction']
+                    sample_count = data['sample_count']
+
+                    if gain > 0.01:
+                        effect_desc = "显著协同效应"
+                        impact_desc = "位置间配置产生叠加增强"
+                    elif gain > 0.005:
+                        effect_desc = "轻微协同效应"
+                        impact_desc = "位置间配置略有协同"
+                    elif gain > -0.005:
+                        effect_desc = "无明显交互"
+                        impact_desc = "位置间相对独立"
+                    elif gain > -0.01:
+                        effect_desc = "轻微冲突效应"
+                        impact_desc = "位置间配置略有抵消"
+                    else:
+                        effect_desc = "显著冲突效应"
+                        impact_desc = "位置间配置相互干扰"
+
+                    report.append(f"**{pair}交互分析:**")
+                    report.append(f"- 交互增益: {gain:.4f} ({effect_desc})")
+                    report.append(f"- 模型改进: {r2_base:.3f} → {r2_inter:.3f}")
+                    report.append(f"- 效应解释: {impact_desc}")
+                    report.append(f"- 样本规模: {sample_count}")
+                    report.append("")
+
+        report.append("---")
+        report.append("💡 **DifficultyPosition优化建议总结:**")
+        report.append("1. **目标区间**: 优先将DifficultyPosition控制在0.4-0.7范围")
+        report.append("2. **避免极端**: 严格避免0.3以下的早期难点配置")
+        report.append("3. **交互考虑**: 注意位置间的协同效应，避免冲突配置")
+        report.append("4. **数据验证**: 关注样本量，优先采用高置信度的配置数据")
         report.append("")
 
     def _add_mechanism_effects_report(self, report):
         if 'mechanism_effects' not in self.results:
             return
 
-        report.append("\n## 🔍 影响机制分析\n")
-        report.append("### 📝 分析说明")
-        report.append("机制分析探讨配置位置如何通过中介变量影响最终指标。直接效应表示")
-        report.append("位置对目标指标的直接影响，中介效应表示通过其他指标间接影响的路径。")
-        report.append("理解这些机制有助于精确调节配置以达到预期效果。\n")
+        report.append("\n## 🔍 影响机制分析 (增强版)\n")
+        report.append("### 📝 机制分析理论基础")
+        report.append("**影响机制分析** 是一种深度解析体验配置如何产生最终效果的方法论。该分析基于中介效应理论，")
+        report.append("旨在识别配置影响游戏指标的具体路径和中间环节。")
+        report.append("")
+        report.append("**核心概念说明：**")
+        report.append("- **直接效应(Direct Effect)**: 配置位置直接对目标指标产生的影响，不通过其他中间变量")
+        report.append("- **中介效应(Mediation Effect)**: 配置通过影响中间变量，再由中间变量影响目标指标的间接路径")
+        report.append("- **总效应(Total Effect)**: 直接效应 + 所有中介效应的总和")
+        report.append("- **中介路径强度**: 衡量特定中介路径对总影响的贡献度，数值越大贡献越大")
+        report.append("")
+        report.append("**实践价值：**")
+        report.append("- 理解WHY：不仅知道\"配置X影响指标Y\"，还知道\"是通过什么机制影响的\"")
+        report.append("- 精准优化：针对具体机制进行优化，而非盲目调整配置")
+        report.append("- 副作用预测：了解调整某个配置可能对其他指标产生的连锁影响")
+        report.append("")
 
         for pos, mechanism in self.results['mechanism_effects'].items():
-            report.append(f"### {pos}的影响机制:")
+            report.append(f"### 🎯 {pos.upper()}位置的影响机制深度解析")
+
             if 'direct_effect' in mechanism:
-                report.append(f"- **直接效应**: {mechanism['direct_effect']:.3f}")
+                direct_effect = mechanism['direct_effect']
+                effect_strength = "强直接影响" if abs(direct_effect) > 0.3 else "中等直接影响" if abs(direct_effect) > 0.1 else "弱直接影响"
+                effect_direction = "正向推动" if direct_effect > 0 else "负向抑制"
+
+                report.append(f"**直接效应分析:**")
+                report.append(f"- 直接效应系数: {direct_effect:.3f} ({effect_strength}，{effect_direction})")
+                report.append(f"- 效应解释: {pos.upper()}配置每增加1个单位，目标指标{('增加' if direct_effect > 0 else '减少')}{abs(direct_effect):.3f}个单位")
+
+                if abs(direct_effect) > 0.2:
+                    report.append(f"- **设计建议**: 该位置对目标指标有显著直接影响，是关键调节点")
+                elif abs(direct_effect) > 0.1:
+                    report.append(f"- **设计建议**: 该位置有中等程度的直接影响，可作为微调参数")
+                else:
+                    report.append(f"- **设计建议**: 该位置直接影响较小，主要通过中介机制发挥作用")
+                report.append("")
 
             if 'strongest_mediation_path' in mechanism:
                 strongest = mechanism['strongest_mediation_path']
-                report.append(f"- **最强中介路径**: {strongest['mediator']} (strength: {strongest['strength']:.3f})")
+                mediator = strongest['mediator']
+                strength = strongest['strength']
+
+                # 中介变量含义解释
+                mediator_explanations = {
+                    'PeakDockCount': '游戏过程中Dock区域的最大瓦片数量，反映游戏过程的复杂程度和压力峰值',
+                    'PressureValueMean': '游戏全程压力值的平均水平，衡量整体游戏难度和压迫感',
+                    'PressureValueMax': '游戏过程中的最大压力值，反映游戏的难度峰值',
+                    'PressureValueStdDev': '压力值的标准差，衡量游戏难度波动的剧烈程度',
+                    'InitialMinCost': '游戏初期的最小消除成本，反映开局的难易程度',
+                    'FinalDifficulty': '游戏最终难度评分，综合衡量关卡的整体挑战水平'
+                }
+
+                mediator_desc = mediator_explanations.get(mediator, f'{mediator}相关指标')
+                strength_level = "显著中介效应" if abs(strength) > 0.2 else "中等中介效应" if abs(strength) > 0.1 else "轻微中介效应"
+
+                report.append(f"**最强中介路径分析:**")
+                report.append(f"- 中介变量: {mediator}")
+                report.append(f"- 中介含义: {mediator_desc}")
+                report.append(f"- 中介强度: {strength:.3f} ({strength_level})")
+                report.append(f"- **作用机制**: {pos.upper()}配置 → 影响{mediator} → {mediator}影响目标指标")
+
+                if abs(strength) > 0.15:
+                    report.append(f"- **优化策略**: 该中介路径是主要影响机制，调整{pos.upper()}时需重点关注对{mediator}的影响")
+                else:
+                    report.append(f"- **优化策略**: 该中介路径影响相对较小，可作为辅助优化方向")
+
+                # 添加具体的优化建议
+                if mediator == 'PeakDockCount':
+                    report.append(f"- **具体建议**: 通过调整{pos.upper()}来控制Dock区域压力，避免瓦片堆积过多")
+                elif mediator == 'PressureValueMean':
+                    report.append(f"- **具体建议**: 通过{pos.upper()}调节整体游戏压力水平，保持挑战与体验的平衡")
+                elif mediator == 'DifficultyPosition':
+                    report.append(f"- **具体建议**: 通过{pos.upper()}控制难点出现时机，优化游戏节奏")
+
+                report.append("")
+
+            # 添加综合机制评估
+            if 'direct_effect' in mechanism and 'strongest_mediation_path' in mechanism:
+                direct = abs(mechanism['direct_effect'])
+                indirect = abs(mechanism['strongest_mediation_path']['strength'])
+
+                if direct > indirect * 1.5:
+                    mechanism_type = "直接主导型"
+                    mechanism_desc = f"该位置主要通过直接效应影响目标指标，中介效应相对较弱"
+                    optimization_focus = "重点关注该位置的直接调节效果"
+                elif indirect > direct * 1.5:
+                    mechanism_type = "中介主导型"
+                    mechanism_desc = f"该位置主要通过中介机制影响目标指标，直接效应相对较小"
+                    optimization_focus = f"重点关注{mechanism['strongest_mediation_path']['mediator']}的变化"
+                else:
+                    mechanism_type = "混合影响型"
+                    mechanism_desc = f"该位置通过直接和中介两种机制共同影响目标指标"
+                    optimization_focus = "需要同时考虑直接效应和中介效应"
+
+                report.append(f"**综合机制评估:**")
+                report.append(f"- 机制类型: {mechanism_type}")
+                report.append(f"- 机制特征: {mechanism_desc}")
+                report.append(f"- 优化重点: {optimization_focus}")
+                report.append("")
+
+        report.append("---")
+        report.append("💡 **机制分析应用指南:**")
+        report.append("1. **直接主导型位置**: 直接调整配置值，效果立竿见影")
+        report.append("2. **中介主导型位置**: 关注中介变量变化，通过间接路径优化")
+        report.append("3. **混合影响型位置**: 综合考虑直接和间接效应，全面评估调整影响")
+        report.append("4. **机制验证**: 建议通过A/B测试验证识别出的影响机制")
+        report.append("")
 
     def _add_key_findings_and_recommendations(self, report):
         report.append("\n## 💡 关键发现与建议\n")
@@ -1711,51 +1974,203 @@ class ExperienceConfigAnalyzer:
         report.append("- 建议定期重新分析以适应游戏发展和玩家行为变化")
 
     def _add_value_specific_report(self, report):
-        """添加单一数值深度分析报告"""
+        """添加单一数值深度分析报告 - 增强版"""
         if 'value_specific_effects' not in self.results:
             return
 
-        report.append("\n## 🎯 数值特异性影响分析\n")
+        report.append("\n## 🎯 数值特异性影响分析 (增强版)\n")
+        report.append("### 📝 数值特异性分析说明")
+        report.append("**数值特异性分析** 深入研究体验配置中每个具体数值的独特影响特征。不同于常规的相关性分析，")
+        report.append("该分析专注于识别每个数值的\"个性\"和\"专长\"，为精细化配置提供数据支撑。")
+        report.append("")
+        report.append("**分析维度详解：**")
+        report.append("- **难度影响**: 该数值对游戏整体难度的影响程度和稳定性")
+        report.append("- **胜率表现**: 使用该数值时玩家的成功率和游戏完成情况")
+        report.append("- **Dock管理**: 该数值对手牌区域管理复杂度的影响")
+        report.append("- **压力动态**: 该数值如何影响游戏过程中的压力变化模式")
+        report.append("- **DifficultyPosition**: 该数值对难点出现时机的影响")
+        report.append("")
+        report.append("**实用价值：**")
+        report.append("- **个性化配置**: 了解每个数值的特色，实现差异化关卡设计")
+        report.append("- **数值库管理**: 构建数值效果数据库，支持智能推荐系统")
+        report.append("- **风险评估**: 识别高风险数值配置，避免极端体验")
+        report.append("")
 
-        # 重点分析几个关键数值
-        key_values = [1, 3, 5, 7, 9]  # 分析关键数值点
+        # 重点分析几个关键数值 - 扩展分析范围
+        key_values = [1, 2, 3, 4, 5, 6, 7, 8, 9]  # 扩展到全数值范围
+
+        # 先进行全局数值效果排序
+        value_effectiveness = {}
+        for value in key_values:
+            value_key = f"value_{value}"
+            if value_key in self.results['value_specific_effects']:
+                value_data = self.results['value_specific_effects'][value_key]
+                # 计算该数值的综合效果分数 (可以基于多个维度)
+                total_sample = 0
+                avg_success_rate = 0
+                for pos in ['pos1', 'pos2', 'pos3']:
+                    if pos in value_data and 'win_rate' in value_data[pos]:
+                        total_sample += value_data[pos]['win_rate'].get('total_games', 0)
+                        avg_success_rate += value_data[pos]['win_rate'].get('success_rate', 0)
+                if total_sample > 0:
+                    value_effectiveness[value] = {
+                        'avg_success_rate': avg_success_rate / 3,
+                        'total_sample': total_sample
+                    }
+
+        # 按效果排序数值
+        sorted_values = sorted(value_effectiveness.items(),
+                             key=lambda x: (x[1]['avg_success_rate'], x[1]['total_sample']),
+                             reverse=True)
+
+        if sorted_values:
+            report.append("### 📊 数值效果综合排序")
+            report.append("**根据胜率和样本量综合评估的数值效果排序：**")
+            for rank, (value, stats) in enumerate(sorted_values[:5], 1):
+                report.append(f"{rank}. **数值{value}**: 平均胜率{stats['avg_success_rate']:.3f}, 总样本{stats['total_sample']}局")
+            report.append("")
 
         for value in key_values:
             value_key = f"value_{value}"
             if value_key in self.results['value_specific_effects']:
-                report.append(f"### 数值{value}的影响特征:")
-
                 value_data = self.results['value_specific_effects'][value_key]
+
+                # 数值特征标签生成
+                value_rank = next((i for i, (v, _) in enumerate(sorted_values, 1) if v == value), None)
+                rank_label = f"第{value_rank}名" if value_rank and value_rank <= 5 else "表现中等" if value_rank else "效果待评估"
+
+                report.append(f"### 🔢 数值{value}深度特征分析 ({rank_label})")
+
+                # 计算该数值的总体统计特征
+                all_positions_stats = {}
+                total_games = 0
+                total_success = 0
 
                 for pos in ['pos1', 'pos2', 'pos3']:
                     if pos in value_data:
                         pos_data = value_data[pos]
-                        report.append(f"#### {pos}位置:")
+                        if 'win_rate' in pos_data:
+                            games = pos_data['win_rate'].get('total_games', 0)
+                            success_rate = pos_data['win_rate'].get('success_rate', 0)
+                            total_games += games
+                            total_success += games * success_rate
 
-                        # 难度影响
+                overall_success_rate = total_success / total_games if total_games > 0 else 0
+
+                # 数值总体特征描述
+                if overall_success_rate > 0.8:
+                    value_profile = "高效型数值 - 胜率出色，推荐在关键位置使用"
+                elif overall_success_rate > 0.6:
+                    value_profile = "平衡型数值 - 表现稳定，适合常规配置"
+                elif overall_success_rate > 0.4:
+                    value_profile = "挑战型数值 - 增加难度，需谨慎使用"
+                else:
+                    value_profile = "高风险数值 - 可能导致高失败率，建议避免"
+
+                sample_confidence = "高可信度" if total_games > 200 else "中可信度" if total_games > 50 else "低可信度"
+
+                report.append(f"**数值{value}总体画像:**")
+                report.append(f"- 数值特征: {value_profile}")
+                report.append(f"- 整体胜率: {overall_success_rate:.3f} ({total_games}局游戏)")
+                report.append(f"- 数据可信度: {sample_confidence}")
+                report.append("")
+
+                # 各位置详细分析
+                for pos in ['pos1', 'pos2', 'pos3']:
+                    if pos in value_data:
+                        pos_data = value_data[pos]
+                        report.append(f"**{pos.upper()}位置的{value}数值效果:**")
+
+                        # 难度影响分析
                         if 'difficulty_impact' in pos_data:
                             diff_data = pos_data['difficulty_impact']
-                            report.append(f"- **难度影响**: 平均{diff_data['mean']:.2f}, 标准差{diff_data['std']:.2f}, 样本{diff_data['count']}个")
+                            mean_diff = diff_data['mean']
+                            std_diff = diff_data['std']
 
-                        # 胜率影响
+                            difficulty_level = "极高难度" if mean_diff > 2000 else "高难度" if mean_diff > 1500 else "中等难度" if mean_diff > 1000 else "较低难度"
+                            stability = "波动大" if std_diff > 500 else "较稳定" if std_diff > 200 else "很稳定"
+
+                            report.append(f"- 难度影响: {mean_diff:.1f}±{std_diff:.1f} ({difficulty_level}，{stability})")
+
+                        # 胜率影响分析
                         if 'win_rate' in pos_data:
                             win_data = pos_data['win_rate']
-                            report.append(f"- **胜率表现**: 成功率{win_data['success_rate']:.3f} ({win_data['total_games']}局游戏)")
+                            success_rate = win_data['success_rate']
+                            total_games = win_data['total_games']
 
-                        # Dock影响
+                            performance_level = "出色" if success_rate > 0.8 else "良好" if success_rate > 0.6 else "一般" if success_rate > 0.4 else "较差"
+
+                            report.append(f"- 胜率表现: {success_rate:.3f} ({performance_level}，{total_games}局样本)")
+
+                        # DifficultyPosition影响 (如果存在)
+                        if 'difficulty_position_impact' in pos_data:
+                            dp_data = pos_data['difficulty_position_impact']
+                            dp_mean = dp_data.get('mean', 0)
+
+                            if dp_mean < 0.3:
+                                timing_desc = "前期难点型 - 开局即遇挑战"
+                            elif dp_mean < 0.7:
+                                timing_desc = "中期难点型 - 渐进式挑战"
+                            elif dp_mean < 1.0:
+                                timing_desc = "后期难点型 - 后发制人"
+                            else:
+                                timing_desc = "平滑体验型 - 无明显难点"
+
+                            report.append(f"- 难点时机: {dp_mean:.3f} ({timing_desc})")
+
+                        # Dock管理复杂度
                         if 'dock_impact' in pos_data:
                             dock_data = pos_data['dock_impact']
                             if 'total_sequences' in dock_data:
-                                report.append(f"- **序列数量**: {dock_data['total_sequences']}个")
+                                sequences = dock_data['total_sequences']
+                                complexity = "高复杂" if sequences > 50 else "中复杂" if sequences > 20 else "低复杂"
+                                report.append(f"- Dock管理: {sequences}个序列 ({complexity}度)")
 
-                        # 压力影响
+                        # 压力影响详细分析
                         if 'pressure_impact' in pos_data:
                             pressure_data = pos_data['pressure_impact']
+                            pressure_insights = []
+
                             for pressure_type, pressure_stats in pressure_data.items():
                                 if 'mean' in pressure_stats:
-                                    report.append(f"- **{pressure_type}**: {pressure_stats['mean']:.3f}")
+                                    value = pressure_stats['mean']
+                                    if pressure_type == 'PressureValueMean':
+                                        level = "高压" if value > 3.0 else "中压" if value > 2.0 else "低压"
+                                        pressure_insights.append(f"平均压力{value:.2f}({level})")
+                                    elif pressure_type == 'PressureValueMax':
+                                        level = "极限压力" if value > 5.0 else "高峰压力" if value > 4.0 else "适中峰值"
+                                        pressure_insights.append(f"峰值压力{value:.2f}({level})")
 
-                report.append("")  # 空行分隔
+                            if pressure_insights:
+                                report.append(f"- 压力特征: {', '.join(pressure_insights)}")
+
+                        report.append("")
+
+                # 数值使用建议
+                report.append(f"**数值{value}使用建议:**")
+                if overall_success_rate > 0.7:
+                    report.append(f"- ✅ **推荐使用**: 该数值表现出色，可在各类关卡中放心使用")
+                    report.append(f"- 🎯 **最佳场景**: 适合构建成功率较高的常规关卡")
+                elif overall_success_rate > 0.5:
+                    report.append(f"- 🔶 **谨慎使用**: 该数值表现中等，建议在有经验的配置中使用")
+                    report.append(f"- 🎯 **适用场景**: 适合平衡挑战性和可玩性的关卡")
+                else:
+                    report.append(f"- ⚠️ **限制使用**: 该数值可能带来高难度，仅建议在特殊挑战关卡中使用")
+                    report.append(f"- 🎯 **特殊场景**: 适合构建高难度挑战或专家级关卡")
+
+                if total_games < 50:
+                    report.append(f"- 📊 **数据建议**: 样本量较少，建议收集更多数据以验证效果")
+
+                report.append("")
+
+        report.append("---")
+        report.append("💡 **数值特异性分析应用指南:**")
+        report.append("1. **数值选择**: 根据关卡设计目标选择合适特征的数值")
+        report.append("2. **组合优化**: 避免多个高风险数值同时使用")
+        report.append("3. **难度调节**: 利用数值的DifficultyPosition特征精确控制难点时机")
+        report.append("4. **A/B测试**: 对比不同数值的实际效果，验证理论分析")
+        report.append("5. **数据更新**: 定期更新数值效果数据，适应玩家行为变化")
+        report.append("")
 
     def _add_gradient_effects_report(self, report):
         """添加数值梯度效应报告"""
@@ -2442,7 +2857,7 @@ def main():
         sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
         sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
-    print("🚀 体验模式配置深度影响分析工具启动...")
+    print("🚀 体验模式配置深度影响分析工具启动...", flush=True)
 
     try:
         # 创建分析器实例 - 默认使用多文件模式
