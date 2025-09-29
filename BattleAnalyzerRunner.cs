@@ -38,6 +38,8 @@ namespace DGuo.Client.TileMatch.Analysis
             public int TypeCount5 { get; set; }
             public int TypeCount6 { get; set; }
             public int TypeRange1 { get; set; }
+            public (float min, float max)? PositionRange { get; set; }
+            public (float min, float max)? ScoreRange { get; set; }
         }
 
         /// <summary>
@@ -88,9 +90,56 @@ namespace DGuo.Client.TileMatch.Analysis
             public string ErrorMessage { get; set; }
         }
 
+        /// <summary>
+        /// 地形级筛选配置
+        /// </summary>
+        public class TerrainFilterConfig
+        {
+            public int TerrainId { get; set; }
+            public (float min, float max)? PositionRange { get; set; }
+            public (float min, float max)? ScoreRange { get; set; }
+            public bool HasValidConfig => PositionRange.HasValue || ScoreRange.HasValue;
+
+            /// <summary>
+            /// 检查分析结果是否符合地形特定筛选条件
+            /// </summary>
+            public bool MatchesCriteria(AnalysisResult result)
+            {
+                bool positionMatch = true;
+                bool scoreMatch = true;
+
+                if (PositionRange.HasValue)
+                {
+                    var range = PositionRange.Value;
+                    positionMatch = result.DifficultyPosition >= range.min && result.DifficultyPosition <= range.max;
+                }
+
+                if (ScoreRange.HasValue)
+                {
+                    var range = ScoreRange.Value;
+                    scoreMatch = result.DifficultyScore >= range.min && result.DifficultyScore <= range.max;
+                }
+
+                return positionMatch && scoreMatch;
+            }
+
+            /// <summary>
+            /// 获取配置描述
+            /// </summary>
+            public string GetDescription()
+            {
+                var parts = new List<string>();
+                if (PositionRange.HasValue)
+                    parts.Add($"Position[{PositionRange.Value.min:F2}-{PositionRange.Value.max:F2}]");
+                if (ScoreRange.HasValue)
+                    parts.Add($"Score[{ScoreRange.Value.min:F0}-{ScoreRange.Value.max:F0}]");
+                return parts.Count > 0 ? string.Join(", ", parts) : "无筛选条件";
+            }
+        }
+
 
         /// <summary>
-        /// 批量运行配置 - 参考BatchLevelEvaluatorSimple的配置模式，增加筛选和策略功能
+        /// 批量运行配置 - 简化版本，支持地形特定筛选
         /// </summary>
         [System.Serializable]
         public class RunConfig
@@ -100,7 +149,7 @@ namespace DGuo.Client.TileMatch.Analysis
             public int ColorCountConfigEnum = -2; // 花色数量枚举：1=type-count-1, 2=type-count-2, -1=type-range-1所有配置
 
             [Header("=== 测试参数 ===")]
-            public int TestLevelCount = 50; // 测试关卡数量
+            public int TestLevelCount = 5; // 测试关卡数量
 
             [Header("=== 排列组合配置 (ExperienceConfigEnum = -2时生效) ===")]
             public int ArrayLength = 3; // 数组长度
@@ -115,19 +164,18 @@ namespace DGuo.Client.TileMatch.Analysis
             [Header("=== 输出配置 ===")]
             public string OutputDirectory = "BattleAnalysisResults";
 
-            [Header("=== 智能筛选配置 ===")]
-            public bool EnableFiltering = true; // 是否启用筛选功能
-            public float DifficultyPositionRangeMin = 0.55f; // 难点位置范围最小值：基于报告推荐的理想范围
-            public float DifficultyPositionRangeMax = 0.8f; // 难点位置范围最大值
-            public float DifficultyScoreRangeMin = 150f; // 难度分数范围最小值
-            public float DifficultyScoreRangeMax = 300f; // 难度分数范围最大值
-            public int RequiredResultsPerTerrain = 3; // 每个地形需要找到的符合条件结果数量
+            [Header("=== 筛选配置 ===")]
+            public bool UseTerrainSpecificFiltering = true; // 是否使用地形特定筛选（从CSV读取）
+            public bool EnableGlobalFiltering = false; // 是否启用全局筛选（作为fallback）
+            public float GlobalDifficultyPositionRangeMin = 0.55f; // 全局难点位置范围最小值
+            public float GlobalDifficultyPositionRangeMax = 0.8f; // 全局难点位置范围最大值
+            public float GlobalDifficultyScoreRangeMin = 150f; // 全局难度分数范围最小值
+            public float GlobalDifficultyScoreRangeMax = 300f; // 全局难度分数范围最大值
+            public int RequiredResultsPerTerrain = 1; // 每个地形需要找到的符合条件结果数量
 
             [Header("=== 策略切换配置 ===")]
-            public bool EnableStrategicSwitching = true; // 是否启用策略性配置切换
+            public bool EnableStrategicSwitching = false; // 是否启用策略性配置切换
             public int MaxConfigAttemptsPerTerrain = 100; // 每个地形最大尝试配置数量
-            // 预留接口：未来可能加入花色数量的策略选择
-            // public bool EnableColorCountStrategy = false;
 
             /// <summary>
             /// 获取用于测试的随机种子
@@ -136,7 +184,6 @@ namespace DGuo.Client.TileMatch.Analysis
             {
                 if (UseFixedSeed)
                 {
-                    // 固定种子模式：从种子列表中按索引循环取值
                     if (FixedSeedValues != null && FixedSeedValues.Length > 0)
                     {
                         int seedIndex = runIndex % FixedSeedValues.Length;
@@ -144,37 +191,62 @@ namespace DGuo.Client.TileMatch.Analysis
                     }
                     else
                     {
-                        // 兼容性：如果种子列表为空，使用默认种子
                         return 12345678 + levelIndex * 1000 + runIndex;
                     }
                 }
                 else
                 {
-                    // 随机种子模式：生成完全随机的种子
                     return UnityEngine.Random.Range(1, int.MaxValue);
                 }
             }
 
             /// <summary>
-            /// 检查分析结果是否符合筛选条件
+            /// 检查分析结果是否符合筛选条件（优先使用地形特定配置）
             /// </summary>
             public bool MatchesCriteria(AnalysisResult result)
             {
-                if (!EnableFiltering) return true;
+                // 优先使用地形特定筛选
+                if (UseTerrainSpecificFiltering)
+                {
+                    var terrainConfig = CsvConfigManager.GetTerrainFilterConfig(result.TerrainId);
+                    if (terrainConfig.HasValidConfig)
+                    {
+                        return terrainConfig.MatchesCriteria(result);
+                    }
+                }
 
-                return result.DifficultyPosition >= DifficultyPositionRangeMin &&
-                       result.DifficultyPosition <= DifficultyPositionRangeMax &&
-                       result.DifficultyScore >= DifficultyScoreRangeMin &&
-                       result.DifficultyScore <= DifficultyScoreRangeMax;
+                // Fallback到全局筛选
+                if (EnableGlobalFiltering)
+                {
+                    return result.DifficultyPosition >= GlobalDifficultyPositionRangeMin &&
+                           result.DifficultyPosition <= GlobalDifficultyPositionRangeMax &&
+                           result.DifficultyScore >= GlobalDifficultyScoreRangeMin &&
+                           result.DifficultyScore <= GlobalDifficultyScoreRangeMax;
+                }
+
+                // 如果都没有启用筛选，返回true
+                return true;
             }
+
+            /// <summary>
+            /// 检查是否启用了任何筛选
+            /// </summary>
+            public bool IsFilteringEnabled => UseTerrainSpecificFiltering || EnableGlobalFiltering;
 
             /// <summary>
             /// 获取筛选条件描述
             /// </summary>
             public string GetFilterDescription()
             {
-                if (!EnableFiltering) return "筛选已禁用";
-                return $"DifficultyPosition[{DifficultyPositionRangeMin:F2}-{DifficultyPositionRangeMax:F2}], DifficultyScore[{DifficultyScoreRangeMin:F0}-{DifficultyScoreRangeMax:F0}], 每地形需要{RequiredResultsPerTerrain}个结果";
+                if (!IsFilteringEnabled) return "筛选已禁用";
+
+                var parts = new List<string>();
+                if (UseTerrainSpecificFiltering)
+                    parts.Add("地形特定筛选");
+                if (EnableGlobalFiltering)
+                    parts.Add($"全局筛选[Position:{GlobalDifficultyPositionRangeMin:F2}-{GlobalDifficultyPositionRangeMax:F2}, Score:{GlobalDifficultyScoreRangeMin:F0}-{GlobalDifficultyScoreRangeMax:F0}]");
+
+                return string.Join(" + ", parts) + $", 每地形需要{RequiredResultsPerTerrain}个结果";
             }
 
             /// <summary>
@@ -209,7 +281,7 @@ namespace DGuo.Client.TileMatch.Analysis
                 };
 
                 string seedMode = UseFixedSeed ? $"固定种子列表({FixedSeedValues?.Length ?? 0}个)" : "随机种子";
-                string filterMode = EnableFiltering ? $", 筛选[{GetFilterDescription()}]" : "";
+                string filterMode = IsFilteringEnabled ? $", 筛选[{GetFilterDescription()}]" : "";
                 string strategyMode = EnableStrategicSwitching ? $", 策略切换[最多{MaxConfigAttemptsPerTerrain}次尝试]" : "";
 
                 return $"体验模式[{expMode}], 花色数量[{colorMode}], {seedMode}, 每关卡{RunsPerLevel}次{filterMode}{strategyMode}";
@@ -256,7 +328,7 @@ namespace DGuo.Client.TileMatch.Analysis
                             while ((line = reader.ReadLine()) != null)
                             {
                                 var parts = CsvParser.ParseCsvLine(line);
-                                if (parts.Length >= 15 && int.TryParse(parts[0], out int terrainId))
+                                if (parts.Length >= 17 && int.TryParse(parts[0], out int terrainId))
                                 {
                                     var config = new CsvLevelConfig
                                     {
@@ -274,7 +346,9 @@ namespace DGuo.Client.TileMatch.Analysis
                                         TypeCount4 = CsvParser.ParseIntOrDefault(parts[11], 1),
                                         TypeCount5 = CsvParser.ParseIntOrDefault(parts[12], 1),
                                         TypeCount6 = CsvParser.ParseIntOrDefault(parts[13], 1),
-                                        TypeRange1 = CsvParser.ParseIntOrDefault(parts[14], 1)
+                                        TypeRange1 = CsvParser.ParseIntOrDefault(parts[14], 1),
+                                        PositionRange = CsvParser.ParseFloatRange(parts[15]),
+                                        ScoreRange = CsvParser.ParseFloatRange(parts[16])
                                     };
                                     _csvConfigs[terrainId] = config;
                                 }
@@ -550,6 +624,26 @@ namespace DGuo.Client.TileMatch.Analysis
                 var counts = ResolveColorCounts(colorCountConfigEnum, terrainId);
                 return counts.Length > 0 ? counts[0] : 7;
             }
+
+            /// <summary>
+            /// 获取地形特定的筛选配置
+            /// </summary>
+            public static TerrainFilterConfig GetTerrainFilterConfig(int terrainId)
+            {
+                LoadCsvConfigs();
+
+                if (_csvConfigs.TryGetValue(terrainId, out var config))
+                {
+                    return new TerrainFilterConfig
+                    {
+                        TerrainId = terrainId,
+                        PositionRange = config.PositionRange,
+                        ScoreRange = config.ScoreRange
+                    };
+                }
+
+                return new TerrainFilterConfig { TerrainId = terrainId };
+            }
         }
 
         /// <summary>
@@ -644,20 +738,81 @@ namespace DGuo.Client.TileMatch.Analysis
             {
                 return string.IsNullOrEmpty(str) || !int.TryParse(str.Trim(), out int result) ? defaultValue : result;
             }
+
+            /// <summary>
+            /// 解析范围值字符串为(min, max)元组
+            /// 支持格式: "0.55-0.8", "0.55~0.8", "0.55,0.8", "150-300"
+            /// </summary>
+            public static (float min, float max)? ParseFloatRange(string rangeStr)
+            {
+                if (string.IsNullOrEmpty(rangeStr))
+                    return null;
+
+                rangeStr = rangeStr.Trim();
+                if (string.IsNullOrEmpty(rangeStr))
+                    return null;
+
+                // 支持多种分隔符
+                string[] separators = { "-", "~", ",", "，" };
+                string[] parts = null;
+
+                foreach (var separator in separators)
+                {
+                    if (rangeStr.Contains(separator))
+                    {
+                        parts = rangeStr.Split(new string[] { separator }, StringSplitOptions.RemoveEmptyEntries);
+                        break;
+                    }
+                }
+
+                if (parts == null || parts.Length != 2)
+                    return null;
+
+                if (float.TryParse(parts[0].Trim(), out float min) &&
+                    float.TryParse(parts[1].Trim(), out float max))
+                {
+                    if (min <= max)
+                        return (min, max);
+                }
+
+                return null;
+            }
         }
 
         /// <summary>
-        /// 游戏内单关卡压力分析 - 简化接口，专注Pressure结果日志输出
+        /// 游戏内单关卡压力分析 - 支持生成校验和筛选两种独立模式
         /// </summary>
         /// <param name="terrainId">地形ID (1-200)</param>
-        /// <param name="experienceMode">体验配置数组，如[1,2,3]</param>
-        /// <param name="colorCount">花色数量</param>
-        /// <param name="randomSeed">随机种子(当runCount!=1时无视此参数)</param>
-        /// <param name="runCount">运行次数，默认1次，当>1时使用随机种子多次运行求均值</param>
-        public static void AnalyzeSingleLevelPressure(int terrainId, int[] experienceMode, int colorCount, int randomSeed, int runCount = 1)
+        /// <param name="experienceMode">体验配置数组，如[1,2,3]（筛选模式时被忽略）</param>
+        /// <param name="colorCount">花色数量（筛选模式时被忽略）</param>
+        /// <param name="randomSeed">随机种子（筛选模式时被忽略）</param>
+        /// <param name="runCount">运行次数，默认1次（筛选模式时表示需要找到的结果数量）</param>
+        /// <param name="positionRange">难点位置范围，如(0.55f, 0.8f)，null表示生成校验模式</param>
+        /// <param name="scoreRange">难度分数范围，如(150f, 300f)，null表示生成校验模式</param>
+        public static void AnalyzeSingleLevelPressure(int terrainId, int[] experienceMode, int colorCount, int randomSeed, int runCount = 1,
+            (float min, float max)? positionRange = null, (float min, float max)? scoreRange = null)
         {
+            // 判断运行模式
+            bool isFilterMode = positionRange.HasValue || scoreRange.HasValue;
 
-            Debug.Log($"=== 开始关卡压力分析 ===");
+            if (isFilterMode)
+            {
+                // 筛选模式：在配置范围内搜索指定数量的符合条件结果
+                RunFilterMode(terrainId, positionRange, scoreRange, runCount);
+            }
+            else
+            {
+                // 生成校验模式：使用指定参数生成并输出详细报告
+                RunGenerationMode(terrainId, experienceMode, colorCount, randomSeed, runCount);
+            }
+        }
+
+        /// <summary>
+        /// 生成校验模式：根据指定参数生成关卡并输出详细分析报告
+        /// </summary>
+        private static void RunGenerationMode(int terrainId, int[] experienceMode, int colorCount, int randomSeed, int runCount)
+        {
+            Debug.Log($"=== 生成校验模式 ===");
             Debug.Log($"地形ID: {terrainId}, 体验配置: [{string.Join(",", experienceMode)}], 花色数量: {colorCount}");
 
             if (runCount == 1)
@@ -672,7 +827,7 @@ namespace DGuo.Client.TileMatch.Analysis
                     return;
                 }
 
-                // 输出单次运行的压力相关核心指标
+                // 输出完整的压力分析结果
                 Debug.Log($"=== 压力分析结果 ===");
                 Debug.Log($"游戏状态: {(result.GameCompleted ? "通关成功" : "未通关")} ({result.CompletionStatus})");
                 Debug.Log($"总步数: {result.TotalMoves}, 成功消除组数: {result.SuccessfulGroups}");
@@ -713,32 +868,158 @@ namespace DGuo.Client.TileMatch.Analysis
                     return;
                 }
 
-                // 计算均值统计
+                // 输出多次运行统计结果
                 var completedCount = validResults.Count(r => r.GameCompleted);
-                var avgTotalMoves = validResults.Average(r => r.TotalMoves);
-                var avgSuccessfulGroups = validResults.Average(r => r.SuccessfulGroups);
-                var avgPeakDockCount = validResults.Average(r => r.PeakDockCount);
-                var avgInitialMinCost = validResults.Average(r => r.InitialMinCost);
-                var avgPressureValueMean = validResults.Average(r => r.PressureValueMean);
-                var avgPressureValueMin = validResults.Average(r => r.PressureValueMin);
-                var avgPressureValueMax = validResults.Average(r => r.PressureValueMax);
-                var avgPressureValueStdDev = validResults.Average(r => r.PressureValueStdDev);
-                var avgDifficultyScore = validResults.Average(r => r.DifficultyScore);
-                var avgFinalDifficulty = validResults.Average(r => r.FinalDifficulty);
-                var avgDifficultyPosition = validResults.Average(r => r.DifficultyPosition);
+                var successfulResults = validResults.Where(r => r.GameCompleted).ToList();
 
-                // 输出多次运行的均值结果
+                if (successfulResults.Count == 0)
+                {
+                    Debug.LogWarning($"所有{validResults.Count}次有效运行均未成功通关，无法计算成功关卡的均值统计");
+                    return;
+                }
+
+                var avgTotalMoves = successfulResults.Average(r => r.TotalMoves);
+                var avgSuccessfulGroups = successfulResults.Average(r => r.SuccessfulGroups);
+                var avgPeakDockCount = successfulResults.Average(r => r.PeakDockCount);
+                var avgInitialMinCost = successfulResults.Average(r => r.InitialMinCost);
+                var avgPressureValueMean = successfulResults.Average(r => r.PressureValueMean);
+                var avgPressureValueMin = successfulResults.Average(r => r.PressureValueMin);
+                var avgPressureValueMax = successfulResults.Average(r => r.PressureValueMax);
+                var avgPressureValueStdDev = successfulResults.Average(r => r.PressureValueStdDev);
+                var avgDifficultyScore = successfulResults.Average(r => r.DifficultyScore);
+                var avgFinalDifficulty = successfulResults.Average(r => r.FinalDifficulty);
+                var avgDifficultyPosition = successfulResults.Average(r => r.DifficultyPosition);
+
                 Debug.Log($"=== 压力分析结果(均值) ===");
                 Debug.Log($"有效运行数: {validResults.Count}/{runCount}, 通关成功率: {(float)completedCount/validResults.Count:P1}");
+                Debug.Log($"成功关卡统计基数: {successfulResults.Count}个成功通关的关卡");
                 Debug.Log($"使用的随机种子: [{string.Join(",", usedSeeds)}]");
                 Debug.Log($"总步数(均值): {avgTotalMoves:F1}, 成功消除组数(均值): {avgSuccessfulGroups:F1}");
                 Debug.Log($"峰值Dock数量(均值): {avgPeakDockCount:F1}, 开局最小Cost(均值): {avgInitialMinCost:F1}");
                 Debug.Log($"压力统计(均值) - 均值: {avgPressureValueMean:F2}, 最小值: {avgPressureValueMin:F1}, 最大值: {avgPressureValueMax:F1}");
                 Debug.Log($"压力标准差(均值): {avgPressureValueStdDev:F2}, 难度分数(均值): {avgDifficultyScore:F2}, 最终难度(均值): {avgFinalDifficulty:F1}/5");
-                Debug.Log($"难点位置(均值): {avgDifficultyPosition:F2} (0=开局, 1=结尾)");
+                Debug.Log($"难点位置(均值): {avgDifficultyPosition:F2} (0=开局, 1=结尾) - 仅基于成功通关关卡");
             }
 
-            Debug.Log($"=== 分析完成 ===");
+            Debug.Log($"=== 生成校验完成 ===");
+        }
+
+        /// <summary>
+        /// 筛选模式：在配置范围内搜索指定数量的符合条件的关卡配置
+        /// </summary>
+        private static void RunFilterMode(int terrainId, (float min, float max)? positionRange, (float min, float max)? scoreRange, int targetResultCount)
+        {
+            Debug.Log($"=== 筛选模式 ===");
+            Debug.Log($"地形ID: {terrainId}");
+
+            // 显示筛选条件
+            var conditions = new List<string>();
+            if (positionRange.HasValue)
+                conditions.Add($"Position[{positionRange.Value.min:F2}-{positionRange.Value.max:F2}]");
+            if (scoreRange.HasValue)
+                conditions.Add($"Score[{scoreRange.Value.min:F0}-{scoreRange.Value.max:F0}]");
+            Debug.Log($"筛选条件: {string.Join(", ", conditions)}");
+            Debug.Log($"目标结果数量: {targetResultCount}个");
+
+            // 创建临时RunConfig用于配置生成（模拟-2, -2配置）
+            var tempConfig = new RunConfig
+            {
+                ArrayLength = 3,  // [a,b,c]格式
+                MinValue = 1,     // 最小值
+                MaxValue = 9      // 最大值
+            };
+
+            // 使用现有的配置生成逻辑
+            var experienceModes = CsvConfigManager.ResolveExperienceModesWithConfig(-2, terrainId, tempConfig);
+            var colorCounts = CsvConfigManager.ResolveColorCounts(-2, terrainId);
+
+            var foundResults = new List<AnalysisResult>();
+            int totalAttempts = 0;
+            int maxAttempts = 10000; // 增加最大尝试次数
+
+            Debug.Log($"开始搜索，配置空间: {experienceModes.Length}种体验模式 × {colorCounts.Length}种花色数量");
+
+            // 在配置空间中搜索，找到目标数量后退出
+            bool targetReached = false;
+            foreach (var experienceMode in experienceModes)
+            {
+                if (targetReached) break;
+
+                foreach (var colorCount in colorCounts)
+                {
+                    if (totalAttempts >= maxAttempts || foundResults.Count >= targetResultCount)
+                    {
+                        targetReached = true;
+                        break;
+                    }
+
+                    totalAttempts++;
+                    int randomSeed = UnityEngine.Random.Range(1, int.MaxValue);
+
+                    var result = RunSingleLevelAnalysis(terrainId.ToString(), experienceMode, colorCount, randomSeed);
+                    result.TerrainId = terrainId;
+
+                    if (!string.IsNullOrEmpty(result.ErrorMessage)) continue;
+
+                    // 检查是否符合筛选条件
+                    if (CheckCriteria(result, positionRange, scoreRange))
+                    {
+                        foundResults.Add(result);
+                        // 输出符合条件的结果
+                        Debug.Log($"✓ 找到符合条件的配置 #{foundResults.Count}/{targetResultCount}:");
+                        Debug.Log($"  体验模式: [{string.Join(",", result.ExperienceMode)}], 花色数量: {result.ColorCount}, 种子: {result.RandomSeed}");
+                        Debug.Log($"  难点位置: {result.DifficultyPosition:F3}, 难度分数: {result.DifficultyScore:F1}, 最终难度: {result.FinalDifficulty}/5");
+                        Debug.Log($"  峰值Dock: {result.PeakDockCount}, 压力均值: {result.PressureValueMean:F2}, 游戏状态: {result.CompletionStatus}");
+
+                        // 达到目标数量后退出
+                        if (foundResults.Count >= targetResultCount)
+                        {
+                            targetReached = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            Debug.Log($"=== 筛选完成 ===");
+
+            if (foundResults.Count >= targetResultCount)
+            {
+                Debug.Log($"成功找到目标数量: {foundResults.Count}/{targetResultCount}个符合条件的配置");
+            }
+            else if (totalAttempts >= maxAttempts)
+            {
+                Debug.Log($"达到最大尝试次数限制: {totalAttempts}次，找到 {foundResults.Count}/{targetResultCount}个符合条件的配置");
+            }
+            else
+            {
+                Debug.Log($"遍历完所有配置空间，找到 {foundResults.Count}/{targetResultCount}个符合条件的配置");
+            }
+
+            Debug.Log($"总搜索尝试: {totalAttempts}次");
+        }
+
+        /// <summary>
+        /// 检查分析结果是否符合指定的筛选条件
+        /// </summary>
+        private static bool CheckCriteria(AnalysisResult result, (float min, float max)? positionRange, (float min, float max)? scoreRange)
+        {
+            bool positionMatch = true;
+            bool scoreMatch = true;
+
+            if (positionRange.HasValue)
+            {
+                var range = positionRange.Value;
+                positionMatch = result.DifficultyPosition >= range.min && result.DifficultyPosition <= range.max;
+            }
+
+            if (scoreRange.HasValue)
+            {
+                var range = scoreRange.Value;
+                scoreMatch = result.DifficultyScore >= range.min && result.DifficultyScore <= range.max;
+            }
+
+            return positionMatch && scoreMatch;
         }
 
         /// <summary>
@@ -1091,11 +1372,16 @@ namespace DGuo.Client.TileMatch.Analysis
         /// <summary>
         /// 计算难点位置：基于DockAfterTrioMatch序列中峰值的位置（0~1）
         /// 使用扩大窗口的策略来精确定位真正的难点
+        /// 修复：防止除零错误导致NaN
         /// </summary>
         private static double CalculateDifficultyPosition(List<int> dockAfterTrioMatch, int peakValue)
         {
             if (dockAfterTrioMatch.Count == 0)
                 return 0.0;
+
+            // 修复：当只有一个三消记录时，返回固定值避免除零
+            if (dockAfterTrioMatch.Count == 1)
+                return 1.0; // 唯一的难点位置设为结尾
 
             // 找到所有等于峰值的位置（从0开始的索引）
             var peakPositions = new List<int>();
@@ -1113,7 +1399,8 @@ namespace DGuo.Client.TileMatch.Analysis
             // 如果只有一个峰值位置，直接返回
             if (peakPositions.Count == 1)
             {
-                return (double)peakPositions[0] / (dockAfterTrioMatch.Count - 1);
+                // 修复：确保分母不为零
+                return (double)peakPositions[0] / Math.Max(1, dockAfterTrioMatch.Count - 1);
             }
 
             // 多个峰值位置时，使用扩大窗口策略找到最佳位置
@@ -1123,9 +1410,13 @@ namespace DGuo.Client.TileMatch.Analysis
         /// <summary>
         /// 使用扩大窗口策略找到最佳峰值位置
         /// 逐步扩大窗口直到找到唯一的最高周围均值位置
+        /// 修复：防止除零错误导致NaN
         /// </summary>
         private static double FindBestPositionWithExpandingWindow(List<int> dockValues, List<int> peakPositions)
         {
+            // 修复：确保分母不为零的统一处理
+            int denominator = Math.Max(1, dockValues.Count - 1);
+
             // 逐步扩大窗口，从5开始，每次增加2，最大到序列长度
             for (int windowSize = 5; windowSize <= dockValues.Count; windowSize += 2)
             {
@@ -1151,19 +1442,19 @@ namespace DGuo.Client.TileMatch.Analysis
                 // 如果只有一个候选者，找到了最佳位置
                 if (candidates.Count == 1)
                 {
-                    return (double)candidates[0].position / (dockValues.Count - 1);
+                    return (double)candidates[0].position / denominator;
                 }
 
                 // 如果窗口已经扩大到最大仍有多个候选者，选择最靠后的位置
                 if (windowSize >= dockValues.Count - 1)
                 {
                     int bestPosition = candidates.Max(c => c.position);
-                    return (double)bestPosition / (dockValues.Count - 1);
+                    return (double)bestPosition / denominator;
                 }
             }
 
             // 兜底：选择最后一个峰值位置
-            return (double)peakPositions.Last() / (dockValues.Count - 1);
+            return (double)peakPositions.Last() / denominator;
         }
 
         /// <summary>
@@ -1702,13 +1993,13 @@ namespace DGuo.Client.TileMatch.Analysis
                 foreach (var experienceMode in experienceModes)
                 {
                     // 检查是否已找到足够的符合条件结果
-                    if (config.EnableFiltering && terrainValidResults.Count >= config.RequiredResultsPerTerrain) break;
+                    if (config.IsFilteringEnabled && terrainValidResults.Count >= config.RequiredResultsPerTerrain) break;
                     if (configAttempts >= config.MaxConfigAttemptsPerTerrain && config.EnableStrategicSwitching) break;
 
                     foreach (var colorCount in colorCounts)
                     {
                         // 检查是否已找到足够的符合条件结果
-                        if (config.EnableFiltering && terrainValidResults.Count >= config.RequiredResultsPerTerrain) break;
+                        if (config.IsFilteringEnabled && terrainValidResults.Count >= config.RequiredResultsPerTerrain) break;
 
                         // 检查花色数量是否超过花色池上限
                         if (colorCount > maxColorPoolSize)
@@ -1722,16 +2013,17 @@ namespace DGuo.Client.TileMatch.Analysis
                         var currentConfigResults = new List<AnalysisResult>();
                         bool currentConfigFoundValid = false;
 
-                        // 根据配置生成多次运行
-                        for (int runIndex = 0; runIndex < config.RunsPerLevel; runIndex++)
+                        foreach (var runIndex in Enumerable.Range(0, config.RunsPerLevel))
                         {
                             int randomSeed = config.GetSeedForRun(terrainId, runIndex);
 
                             completedTasks++;
-                            if (config.EnableFiltering)
+                            if (config.IsFilteringEnabled)
                             {
+                                var terrainConfig = CsvConfigManager.GetTerrainFilterConfig(terrainId);
+                                string filterInfo = terrainConfig.HasValidConfig ? $"地形筛选[{terrainConfig.GetDescription()}]" : "全局筛选";
                                 Debug.Log($"[{completedTasks}/{totalTasks - skippedTasks}] 搜索关卡 {terrainId} (配置尝试{configAttempts + 1}): " +
-                                         $"体验[{string.Join(",", experienceMode)}], 花色{colorCount}, 种子{randomSeed}");
+                                         $"体验[{string.Join(",", experienceMode)}], 花色{colorCount}, 种子{randomSeed}, {filterInfo}");
                             }
                             else
                             {
@@ -1745,7 +2037,7 @@ namespace DGuo.Client.TileMatch.Analysis
                             uniqueIdCounter++;
 
                             // 根据筛选模式决定是否添加结果
-                            if (config.EnableFiltering)
+                            if (config.IsFilteringEnabled)
                             {
                                 // 筛选模式：只添加符合条件的结果
                                 if (config.MatchesCriteria(result))
@@ -1768,14 +2060,14 @@ namespace DGuo.Client.TileMatch.Analysis
                         configAttempts++;
 
                         // 如果当前配置找到了符合条件的结果，且已达到要求数量，跳出花色循环
-                        if (config.EnableFiltering && terrainValidResults.Count >= config.RequiredResultsPerTerrain) break;
+                        if (config.IsFilteringEnabled && terrainValidResults.Count >= config.RequiredResultsPerTerrain) break;
                     }
 
                     // 如果找到了足够的符合条件的配置，且启用了筛选，跳出体验模式循环
-                    if (config.EnableFiltering && terrainValidResults.Count >= config.RequiredResultsPerTerrain) break;
+                    if (config.IsFilteringEnabled && terrainValidResults.Count >= config.RequiredResultsPerTerrain) break;
                 }
 
-                if (config.EnableFiltering)
+                if (config.IsFilteringEnabled)
                 {
                     if (terrainValidResults.Count == 0)
                     {
@@ -1792,7 +2084,7 @@ namespace DGuo.Client.TileMatch.Analysis
                 }
             }
 
-            if (config.EnableFiltering)
+            if (config.IsFilteringEnabled)
             {
                 Debug.Log($"筛选分析完成: 找到 {results.Count} 个符合条件的结果, 跳过 {skippedTasks} 个超限任务");
             }
@@ -1872,12 +2164,12 @@ namespace DGuo.Client.TileMatch.Analysis
 
             var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
             string seedSuffix = config.UseFixedSeed ? $"_FixedSeeds" : "_Random";
-            string filterSuffix = config.EnableFiltering ? "_Filtered" : "";
+            string filterSuffix = config.IsFilteringEnabled ? "_Filtered" : "";
             var csvPath = Path.Combine(config.OutputDirectory, $"BattleAnalysis{seedSuffix}{filterSuffix}_{timestamp}.csv");
 
             ExportToCsv(results, csvPath);
 
-            if (config.EnableFiltering)
+            if (config.IsFilteringEnabled)
             {
                 Debug.Log($"筛选分析完成! 找到 {results.Count} 个符合条件的结果");
             }
