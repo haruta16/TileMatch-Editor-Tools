@@ -88,8 +88,9 @@ namespace DGuo.Client.TileMatch.Analysis
             public string ErrorMessage { get; set; }
         }
 
+
         /// <summary>
-        /// 批量运行配置 - 参考BatchLevelEvaluatorSimple的配置模式
+        /// 批量运行配置 - 参考BatchLevelEvaluatorSimple的配置模式，增加筛选和策略功能
         /// </summary>
         [System.Serializable]
         public class RunConfig
@@ -99,7 +100,7 @@ namespace DGuo.Client.TileMatch.Analysis
             public int ColorCountConfigEnum = -2; // 花色数量枚举：1=type-count-1, 2=type-count-2, -1=type-range-1所有配置
 
             [Header("=== 测试参数 ===")]
-            public int TestLevelCount = 1; // 测试关卡数量
+            public int TestLevelCount = 50; // 测试关卡数量
 
             [Header("=== 排列组合配置 (ExperienceConfigEnum = -2时生效) ===")]
             public int ArrayLength = 3; // 数组长度
@@ -113,6 +114,20 @@ namespace DGuo.Client.TileMatch.Analysis
 
             [Header("=== 输出配置 ===")]
             public string OutputDirectory = "BattleAnalysisResults";
+
+            [Header("=== 智能筛选配置 ===")]
+            public bool EnableFiltering = true; // 是否启用筛选功能
+            public float DifficultyPositionRangeMin = 0.55f; // 难点位置范围最小值：基于报告推荐的理想范围
+            public float DifficultyPositionRangeMax = 0.8f; // 难点位置范围最大值
+            public float DifficultyScoreRangeMin = 150f; // 难度分数范围最小值
+            public float DifficultyScoreRangeMax = 300f; // 难度分数范围最大值
+            public int RequiredResultsPerTerrain = 3; // 每个地形需要找到的符合条件结果数量
+
+            [Header("=== 策略切换配置 ===")]
+            public bool EnableStrategicSwitching = true; // 是否启用策略性配置切换
+            public int MaxConfigAttemptsPerTerrain = 100; // 每个地形最大尝试配置数量
+            // 预留接口：未来可能加入花色数量的策略选择
+            // public bool EnableColorCountStrategy = false;
 
             /// <summary>
             /// 获取用于测试的随机种子
@@ -138,6 +153,28 @@ namespace DGuo.Client.TileMatch.Analysis
                     // 随机种子模式：生成完全随机的种子
                     return UnityEngine.Random.Range(1, int.MaxValue);
                 }
+            }
+
+            /// <summary>
+            /// 检查分析结果是否符合筛选条件
+            /// </summary>
+            public bool MatchesCriteria(AnalysisResult result)
+            {
+                if (!EnableFiltering) return true;
+
+                return result.DifficultyPosition >= DifficultyPositionRangeMin &&
+                       result.DifficultyPosition <= DifficultyPositionRangeMax &&
+                       result.DifficultyScore >= DifficultyScoreRangeMin &&
+                       result.DifficultyScore <= DifficultyScoreRangeMax;
+            }
+
+            /// <summary>
+            /// 获取筛选条件描述
+            /// </summary>
+            public string GetFilterDescription()
+            {
+                if (!EnableFiltering) return "筛选已禁用";
+                return $"DifficultyPosition[{DifficultyPositionRangeMin:F2}-{DifficultyPositionRangeMax:F2}], DifficultyScore[{DifficultyScoreRangeMin:F0}-{DifficultyScoreRangeMax:F0}], 每地形需要{RequiredResultsPerTerrain}个结果";
             }
 
             /// <summary>
@@ -172,7 +209,10 @@ namespace DGuo.Client.TileMatch.Analysis
                 };
 
                 string seedMode = UseFixedSeed ? $"固定种子列表({FixedSeedValues?.Length ?? 0}个)" : "随机种子";
-                return $"体验模式[{expMode}], 花色数量[{colorMode}], {seedMode}, 每关卡{RunsPerLevel}次";
+                string filterMode = EnableFiltering ? $", 筛选[{GetFilterDescription()}]" : "";
+                string strategyMode = EnableStrategicSwitching ? $", 策略切换[最多{MaxConfigAttemptsPerTerrain}次尝试]" : "";
+
+                return $"体验模式[{expMode}], 花色数量[{colorMode}], {seedMode}, 每关卡{RunsPerLevel}次{filterMode}{strategyMode}";
             }
         }
 
@@ -1562,7 +1602,7 @@ namespace DGuo.Client.TileMatch.Analysis
         }
 
         /// <summary>
-        /// 批量运行分析 - 支持-1枚举值的多配置组合，优化性能版本
+        /// 批量运行分析 - 支持筛选和策略性配置切换的增强版本
         /// </summary>
         public static List<AnalysisResult> RunBatchAnalysis(RunConfig config)
         {
@@ -1655,10 +1695,21 @@ namespace DGuo.Client.TileMatch.Analysis
                 var (experienceModes, colorCounts) = kvp.Value;
                 int terrainId = int.Parse(levelName); // 直接解析levelName为terrainId
 
+                // 地形级别的策略性配置搜索
+                var terrainValidResults = new List<AnalysisResult>(); // 当前地形的所有符合条件结果
+                int configAttempts = 0;
+
                 foreach (var experienceMode in experienceModes)
                 {
+                    // 检查是否已找到足够的符合条件结果
+                    if (config.EnableFiltering && terrainValidResults.Count >= config.RequiredResultsPerTerrain) break;
+                    if (configAttempts >= config.MaxConfigAttemptsPerTerrain && config.EnableStrategicSwitching) break;
+
                     foreach (var colorCount in colorCounts)
                     {
+                        // 检查是否已找到足够的符合条件结果
+                        if (config.EnableFiltering && terrainValidResults.Count >= config.RequiredResultsPerTerrain) break;
+
                         // 检查花色数量是否超过花色池上限
                         if (colorCount > maxColorPoolSize)
                         {
@@ -1667,26 +1718,88 @@ namespace DGuo.Client.TileMatch.Analysis
                             continue;
                         }
 
+                        // 当前配置组合的所有种子遍历
+                        var currentConfigResults = new List<AnalysisResult>();
+                        bool currentConfigFoundValid = false;
+
                         // 根据配置生成多次运行
                         for (int runIndex = 0; runIndex < config.RunsPerLevel; runIndex++)
                         {
                             int randomSeed = config.GetSeedForRun(terrainId, runIndex);
 
                             completedTasks++;
-                            Debug.Log($"[{completedTasks}/{totalTasks - skippedTasks}] 分析关卡 {terrainId}: " +
-                                     $"体验[{string.Join(",", experienceMode)}], 花色{colorCount}, 种子{randomSeed}");
+                            if (config.EnableFiltering)
+                            {
+                                Debug.Log($"[{completedTasks}/{totalTasks - skippedTasks}] 搜索关卡 {terrainId} (配置尝试{configAttempts + 1}): " +
+                                         $"体验[{string.Join(",", experienceMode)}], 花色{colorCount}, 种子{randomSeed}");
+                            }
+                            else
+                            {
+                                Debug.Log($"[{completedTasks}/{totalTasks - skippedTasks}] 分析关卡 {terrainId}: " +
+                                         $"体验[{string.Join(",", experienceMode)}], 花色{colorCount}, 种子{randomSeed}");
+                            }
 
                             var result = RunSingleLevelAnalysis(levelName, experienceMode, colorCount, randomSeed);
                             result.TerrainId = terrainId;
                             result.UniqueId = $"BA_{uniqueIdCounter:D6}"; // 生成唯一ID：BA_000001, BA_000002...
                             uniqueIdCounter++;
-                            results.Add(result);
+
+                            // 根据筛选模式决定是否添加结果
+                            if (config.EnableFiltering)
+                            {
+                                // 筛选模式：只添加符合条件的结果
+                                if (config.MatchesCriteria(result))
+                                {
+                                    Debug.Log($"  ✓ 找到符合条件的配置！DifficultyPosition={result.DifficultyPosition:F3}, DifficultyScore={result.DifficultyScore:F1} (地形{terrainId}第{terrainValidResults.Count + 1}个)");
+                                    currentConfigResults.Add(result);
+                                    terrainValidResults.Add(result);
+                                    currentConfigFoundValid = true;
+                                }
+                            }
+                            else
+                            {
+                                // 非筛选模式：添加所有结果
+                                currentConfigResults.Add(result);
+                            }
                         }
+
+                        // 添加当前配置的筛选结果
+                        results.AddRange(currentConfigResults);
+                        configAttempts++;
+
+                        // 如果当前配置找到了符合条件的结果，且已达到要求数量，跳出花色循环
+                        if (config.EnableFiltering && terrainValidResults.Count >= config.RequiredResultsPerTerrain) break;
+                    }
+
+                    // 如果找到了足够的符合条件的配置，且启用了筛选，跳出体验模式循环
+                    if (config.EnableFiltering && terrainValidResults.Count >= config.RequiredResultsPerTerrain) break;
+                }
+
+                if (config.EnableFiltering)
+                {
+                    if (terrainValidResults.Count == 0)
+                    {
+                        Debug.LogWarning($"地形 {terrainId} 在 {configAttempts} 个配置尝试后未找到符合筛选条件的结果");
+                    }
+                    else if (terrainValidResults.Count < config.RequiredResultsPerTerrain)
+                    {
+                        Debug.LogWarning($"地形 {terrainId} 仅找到 {terrainValidResults.Count}/{config.RequiredResultsPerTerrain} 个符合条件的结果");
+                    }
+                    else
+                    {
+                        Debug.Log($"地形 {terrainId} 成功找到 {terrainValidResults.Count}/{config.RequiredResultsPerTerrain} 个符合条件的结果");
                     }
                 }
             }
 
-            Debug.Log($"批量分析完成: {results.Count} 个任务结果, 跳过 {skippedTasks} 个超限任务");
+            if (config.EnableFiltering)
+            {
+                Debug.Log($"筛选分析完成: 找到 {results.Count} 个符合条件的结果, 跳过 {skippedTasks} 个超限任务");
+            }
+            else
+            {
+                Debug.Log($"批量分析完成: {results.Count} 个任务结果, 跳过 {skippedTasks} 个超限任务");
+            }
             return results;
         }
 
@@ -1759,11 +1872,19 @@ namespace DGuo.Client.TileMatch.Analysis
 
             var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
             string seedSuffix = config.UseFixedSeed ? $"_FixedSeeds" : "_Random";
-            var csvPath = Path.Combine(config.OutputDirectory, $"BattleAnalysis{seedSuffix}_{timestamp}.csv");
+            string filterSuffix = config.EnableFiltering ? "_Filtered" : "";
+            var csvPath = Path.Combine(config.OutputDirectory, $"BattleAnalysis{seedSuffix}{filterSuffix}_{timestamp}.csv");
 
             ExportToCsv(results, csvPath);
 
-            Debug.Log($"批量分析完成! 成功分析 {results.Count} 个任务");
+            if (config.EnableFiltering)
+            {
+                Debug.Log($"筛选分析完成! 找到 {results.Count} 个符合条件的结果");
+            }
+            else
+            {
+                Debug.Log($"批量分析完成! 成功分析 {results.Count} 个任务");
+            }
             Debug.Log($"结果已保存到: {csvPath}");
 
             // 打开输出文件夹
@@ -1772,6 +1893,7 @@ namespace DGuo.Client.TileMatch.Analysis
                 System.Diagnostics.Process.Start("explorer.exe", config.OutputDirectory.Replace('/', '\\'));
             }
         }
+
 #endif
     }
 }
