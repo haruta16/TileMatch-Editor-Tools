@@ -2148,10 +2148,20 @@ namespace DGuo.Client.TileMatch.Analysis
 
 #if UNITY_EDITOR
         /// <summary>
-        /// Unity Editor菜单：运行BattleAnalyzer批量分析（使用默认配置）
+        /// Unity Editor菜单：运行BattleAnalyzer批量分析（弹出配置窗口）
         /// </summary>
         [MenuItem("TileMatch/BattleAnalyzer/运行批量分析")]
         public static void RunBatchAnalysisFromMenu()
+        {
+            // 打开配置窗口
+            BattleAnalyzerConfigWindow.ShowWindow();
+        }
+
+        /// <summary>
+        /// Unity Editor菜单：快速运行批量分析（使用默认配置）
+        /// </summary>
+        [MenuItem("TileMatch/BattleAnalyzer/快速运行批量分析(默认配置)")]
+        public static void RunBatchAnalysisFromMenuQuick()
         {
             var config = new RunConfig(); // 使用完全默认的配置
             config.OutputDirectory = Path.Combine(Application.dataPath, "验证器/Editor/BattleAnalysisResults");
@@ -2185,6 +2195,251 @@ namespace DGuo.Client.TileMatch.Analysis
                 System.Diagnostics.Process.Start("explorer.exe", config.OutputDirectory.Replace('/', '\\'));
             }
         }
+
+    /// <summary>
+    /// BattleAnalyzer配置窗口 - 用于设置RunConfig参数
+    /// </summary>
+    public class BattleAnalyzerConfigWindow : EditorWindow
+    {
+        private RunConfig config = new RunConfig();
+        private Vector2 scrollPosition;
+        private string seedValuesString = "";
+
+        public static void ShowWindow()
+        {
+            var window = GetWindow<BattleAnalyzerConfigWindow>("BattleAnalyzer配置");
+            window.minSize = new Vector2(500, 700);
+            window.Show();
+        }
+
+        private void OnEnable()
+        {
+            // 初始化配置
+            config = new RunConfig();
+            config.OutputDirectory = Path.Combine(Application.dataPath, "验证器/Editor/BattleAnalysisResults");
+
+            // 初始化种子值字符串
+            if (config.FixedSeedValues != null && config.FixedSeedValues.Length > 0)
+            {
+                seedValuesString = string.Join(",", config.FixedSeedValues);
+            }
+        }
+
+        private void OnGUI()
+        {
+            scrollPosition = EditorGUILayout.BeginScrollView(scrollPosition);
+
+            GUILayout.Label("BattleAnalyzer 批量分析配置", EditorStyles.boldLabel);
+            GUILayout.Space(10);
+
+            // === CSV配置选择器 ===
+            GUILayout.Label("CSV配置选择器", EditorStyles.boldLabel);
+            EditorGUILayout.BeginVertical("box");
+
+            config.ExperienceConfigEnum = EditorGUILayout.IntField(new GUIContent("体验模式枚举",
+                "1-6=exp-fix-1到exp-fix-6, -1=exp-range-1所有配置, -2=数组排列组合"), config.ExperienceConfigEnum);
+
+            config.ColorCountConfigEnum = EditorGUILayout.IntField(new GUIContent("花色数量枚举",
+                "1-6=type-count-1到type-count-6, -1=type-range-1所有配置, -2=动态范围"), config.ColorCountConfigEnum);
+
+            EditorGUILayout.EndVertical();
+            GUILayout.Space(10);
+
+            // === 测试参数 ===
+            GUILayout.Label("测试参数", EditorStyles.boldLabel);
+            EditorGUILayout.BeginVertical("box");
+
+            config.TestLevelCount = EditorGUILayout.IntField(new GUIContent("测试关卡数量", "要测试的关卡数量"), config.TestLevelCount);
+
+            EditorGUILayout.EndVertical();
+            GUILayout.Space(10);
+
+            // === 排列组合配置 ===
+            GUILayout.Label("排列组合配置 (ExperienceConfigEnum = -2时生效)", EditorStyles.boldLabel);
+            EditorGUILayout.BeginVertical("box");
+
+            config.ArrayLength = EditorGUILayout.IntField(new GUIContent("数组长度", "体验数组长度，如[a,b,c]为3"), config.ArrayLength);
+            config.MinValue = EditorGUILayout.IntField(new GUIContent("最小值", "排列组合的最小值"), config.MinValue);
+            config.MaxValue = EditorGUILayout.IntField(new GUIContent("最大值", "排列组合的最大值"), config.MaxValue);
+
+            EditorGUILayout.EndVertical();
+            GUILayout.Space(10);
+
+            // === 随机种子配置 ===
+            GUILayout.Label("随机种子配置", EditorStyles.boldLabel);
+            EditorGUILayout.BeginVertical("box");
+
+            config.UseFixedSeed = EditorGUILayout.Toggle(new GUIContent("使用固定种子", "true=结果可重现，false=完全随机"), config.UseFixedSeed);
+
+            EditorGUILayout.LabelField("固定种子值列表（逗号分隔）:");
+            seedValuesString = EditorGUILayout.TextArea(seedValuesString, GUILayout.Height(40));
+
+            config.RunsPerLevel = EditorGUILayout.IntField(new GUIContent("每关卡运行次数", "每个关卡运行次数，用于生成多样化数据"), config.RunsPerLevel);
+
+            EditorGUILayout.EndVertical();
+            GUILayout.Space(10);
+
+            // === 筛选配置 ===
+            GUILayout.Label("筛选配置", EditorStyles.boldLabel);
+            EditorGUILayout.BeginVertical("box");
+
+            config.UseTerrainSpecificFiltering = EditorGUILayout.Toggle(new GUIContent("使用地形特定筛选", "从CSV读取position和score字段"), config.UseTerrainSpecificFiltering);
+            config.EnableGlobalFiltering = EditorGUILayout.Toggle(new GUIContent("启用全局筛选", "作为fallback使用"), config.EnableGlobalFiltering);
+
+            if (config.EnableGlobalFiltering)
+            {
+                EditorGUI.indentLevel++;
+                config.GlobalDifficultyPositionRangeMin = EditorGUILayout.FloatField("全局难点位置范围最小值", config.GlobalDifficultyPositionRangeMin);
+                config.GlobalDifficultyPositionRangeMax = EditorGUILayout.FloatField("全局难点位置范围最大值", config.GlobalDifficultyPositionRangeMax);
+                config.GlobalDifficultyScoreRangeMin = EditorGUILayout.FloatField("全局难度分数范围最小值", config.GlobalDifficultyScoreRangeMin);
+                config.GlobalDifficultyScoreRangeMax = EditorGUILayout.FloatField("全局难度分数范围最大值", config.GlobalDifficultyScoreRangeMax);
+                EditorGUI.indentLevel--;
+            }
+
+            config.RequiredResultsPerTerrain = EditorGUILayout.IntField(new GUIContent("每地形需要结果数量", "每个地形需要找到的符合条件结果数量"), config.RequiredResultsPerTerrain);
+
+            EditorGUILayout.EndVertical();
+            GUILayout.Space(10);
+
+            // === 策略切换配置 ===
+            GUILayout.Label("策略切换配置", EditorStyles.boldLabel);
+            EditorGUILayout.BeginVertical("box");
+
+            config.EnableStrategicSwitching = EditorGUILayout.Toggle(new GUIContent("启用策略性配置切换", "是否启用策略性配置切换"), config.EnableStrategicSwitching);
+            config.MaxConfigAttemptsPerTerrain = EditorGUILayout.IntField(new GUIContent("每地形最大尝试配置数量", "每个地形最大尝试配置数量"), config.MaxConfigAttemptsPerTerrain);
+
+            EditorGUILayout.EndVertical();
+            GUILayout.Space(10);
+
+            // === 输出配置 ===
+            GUILayout.Label("输出配置", EditorStyles.boldLabel);
+            EditorGUILayout.BeginVertical("box");
+
+            EditorGUILayout.LabelField("输出目录:");
+            config.OutputDirectory = EditorGUILayout.TextField(config.OutputDirectory);
+
+            if (GUILayout.Button("选择输出目录"))
+            {
+                string selectedPath = EditorUtility.OpenFolderPanel("选择输出目录", config.OutputDirectory, "");
+                if (!string.IsNullOrEmpty(selectedPath))
+                {
+                    config.OutputDirectory = selectedPath;
+                }
+            }
+
+            EditorGUILayout.EndVertical();
+            GUILayout.Space(20);
+
+            // === 预览和执行 ===
+            GUILayout.Label("配置预览", EditorStyles.boldLabel);
+            EditorGUILayout.BeginVertical("box");
+            EditorGUILayout.LabelField("配置描述:", EditorStyles.wordWrappedLabel);
+            EditorGUILayout.LabelField(config.GetConfigDescription(), EditorStyles.wordWrappedMiniLabel);
+            EditorGUILayout.EndVertical();
+            GUILayout.Space(10);
+
+            // 执行按钮
+            EditorGUILayout.BeginHorizontal();
+
+            if (GUILayout.Button("运行批量分析", GUILayout.Height(40)))
+            {
+                RunAnalysis();
+            }
+
+            if (GUILayout.Button("重置为默认配置", GUILayout.Height(40)))
+            {
+                ResetToDefault();
+            }
+
+            EditorGUILayout.EndHorizontal();
+
+            EditorGUILayout.EndScrollView();
+        }
+
+        private void RunAnalysis()
+        {
+            // 解析种子值字符串
+            ParseSeedValues();
+
+            // 确保输出目录存在
+            if (!Directory.Exists(config.OutputDirectory))
+            {
+                Directory.CreateDirectory(config.OutputDirectory);
+            }
+
+            Debug.Log($"=== 开始批量分析（自定义配置） ===");
+            Debug.Log($"配置详情: {config.GetConfigDescription()}");
+            Debug.Log($"关卡数量: {config.TestLevelCount}");
+
+            var results = BattleAnalyzerRunner.RunBatchAnalysis(config);
+
+            var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+            string seedSuffix = config.UseFixedSeed ? $"_FixedSeeds" : "_Random";
+            string filterSuffix = config.IsFilteringEnabled ? "_Filtered" : "";
+            var csvPath = Path.Combine(config.OutputDirectory, $"BattleAnalysis{seedSuffix}{filterSuffix}_{timestamp}.csv");
+
+            BattleAnalyzerRunner.ExportToCsv(results, csvPath);
+
+            if (config.IsFilteringEnabled)
+            {
+                Debug.Log($"筛选分析完成! 找到 {results.Count} 个符合条件的结果");
+            }
+            else
+            {
+                Debug.Log($"批量分析完成! 成功分析 {results.Count} 个任务");
+            }
+            Debug.Log($"结果已保存到: {csvPath}");
+
+            // 打开输出文件夹
+            if (Directory.Exists(config.OutputDirectory))
+            {
+                System.Diagnostics.Process.Start("explorer.exe", config.OutputDirectory.Replace('/', '\\'));
+            }
+
+            // 关闭窗口
+            Close();
+        }
+
+        private void ParseSeedValues()
+        {
+            if (string.IsNullOrWhiteSpace(seedValuesString))
+            {
+                config.FixedSeedValues = new int[] { 12345678, 11111111, 22222222, 33333333, 44444444, 55555555, 66666666, 77777777, 88888888, 99999999 };
+                return;
+            }
+
+            try
+            {
+                var parts = seedValuesString.Split(',');
+                var seedList = new List<int>();
+
+                foreach (var part in parts)
+                {
+                    if (int.TryParse(part.Trim(), out int seed))
+                    {
+                        seedList.Add(seed);
+                    }
+                }
+
+                config.FixedSeedValues = seedList.Count > 0 ? seedList.ToArray() : new int[] { 12345678 };
+            }
+            catch
+            {
+                config.FixedSeedValues = new int[] { 12345678 };
+            }
+        }
+
+        private void ResetToDefault()
+        {
+            config = new RunConfig();
+            config.OutputDirectory = Path.Combine(Application.dataPath, "验证器/Editor/BattleAnalysisResults");
+
+            if (config.FixedSeedValues != null && config.FixedSeedValues.Length > 0)
+            {
+                seedValuesString = string.Join(",", config.FixedSeedValues);
+            }
+        }
+    }
 
 #endif
     }
