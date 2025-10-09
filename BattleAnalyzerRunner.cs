@@ -149,7 +149,7 @@ namespace DGuo.Client.TileMatch.Analysis
             public int ColorCountConfigEnum = -2; // 花色数量枚举：1=type-count-1, 2=type-count-2, -1=type-range-1所有配置
 
             [Header("=== 测试参数 ===")]
-            public int TestLevelCount = 5; // 测试关卡数量
+            public int TestLevelCount = 5; // 测试地形数量
 
             [Header("=== 排列组合配置 (ExperienceConfigEnum = -2时生效) ===")]
             public int ArrayLength = 3; // 数组长度
@@ -159,7 +159,7 @@ namespace DGuo.Client.TileMatch.Analysis
             [Header("=== 随机种子配置 ===")]
             public bool UseFixedSeed = true; // 是否使用固定种子：true=结果可重现，false=完全随机
             public int[] FixedSeedValues = { 12345678, 11111111, 22222222, 33333333, 44444444, 55555555, 66666666, 77777777, 88888888, 99999999 }; // 固定种子值列表
-            public int RunsPerLevel = 5; // 每个关卡运行次数：用于生成多样化数据
+            public int RunsPerLevel = 5; // 每个地形运行次数：用于生成多样化数据
 
             [Header("=== 输出配置 ===")]
             public string OutputDirectory = "BattleAnalysisResults";
@@ -172,9 +172,6 @@ namespace DGuo.Client.TileMatch.Analysis
             public float GlobalDifficultyScoreRangeMin = 150f; // 全局难度分数范围最小值
             public float GlobalDifficultyScoreRangeMax = 300f; // 全局难度分数范围最大值
             public int RequiredResultsPerTerrain = 1; // 每个地形需要找到的符合条件结果数量
-
-            [Header("=== 策略切换配置 ===")]
-            public bool EnableStrategicSwitching = false; // 是否启用策略性配置切换
             public int MaxConfigAttemptsPerTerrain = 100; // 每个地形最大尝试配置数量
 
             /// <summary>
@@ -276,15 +273,14 @@ namespace DGuo.Client.TileMatch.Analysis
                     5 => "TypeCount5",
                     6 => "TypeCount6",
                     -1 => "所有TypeRange1配置",
-                    -2 => "动态花色范围(总tile数/3的40%-80%)",
+                    -2 => "动态花色范围(总tile数/3的40%-100%)",
                     _ => $"配置{ColorCountConfigEnum}"
                 };
 
                 string seedMode = UseFixedSeed ? $"固定种子列表({FixedSeedValues?.Length ?? 0}个)" : "随机种子";
-                string filterMode = IsFilteringEnabled ? $", 筛选[{GetFilterDescription()}]" : "";
-                string strategyMode = EnableStrategicSwitching ? $", 策略切换[最多{MaxConfigAttemptsPerTerrain}次尝试]" : "";
+                string filterMode = IsFilteringEnabled ? $", 筛选[{GetFilterDescription()}], 最多尝试{MaxConfigAttemptsPerTerrain}个配置" : "";
 
-                return $"体验模式[{expMode}], 花色数量[{colorMode}], {seedMode}, 每关卡{RunsPerLevel}次{filterMode}{strategyMode}";
+                return $"体验模式[{expMode}], 花色数量[{colorMode}], {seedMode}, 每地形{RunsPerLevel}次{filterMode}";
             }
         }
 
@@ -1323,7 +1319,7 @@ namespace DGuo.Client.TileMatch.Analysis
                 totalTasks += experienceModes.Length * colorCounts.Length * config.RunsPerLevel;
             }
 
-            Debug.Log($"关卡数量: {availableTerrainIds.Count}, 总任务数: {totalTasks}");
+            Debug.Log($"地形数量: {availableTerrainIds.Count}, 总任务数: {totalTasks}");
             Debug.Log($"使用的TerrainId列表: [{string.Join(",", availableTerrainIds)}]");
 
             // 预分配结果列表容量优化
@@ -1346,7 +1342,7 @@ namespace DGuo.Client.TileMatch.Analysis
                 {
                     // 检查是否已找到足够的符合条件结果
                     if (config.IsFilteringEnabled && terrainValidResults.Count >= config.RequiredResultsPerTerrain) break;
-                    if (configAttempts >= config.MaxConfigAttemptsPerTerrain && config.EnableStrategicSwitching) break;
+                    if (configAttempts >= config.MaxConfigAttemptsPerTerrain) break;
 
                     foreach (var colorCount in colorCounts)
                     {
@@ -1520,7 +1516,7 @@ namespace DGuo.Client.TileMatch.Analysis
 
             Debug.Log($"=== 开始批量分析（默认配置） ===");
             Debug.Log($"配置详情: {config.GetConfigDescription()}");
-            Debug.Log($"关卡数量: {config.TestLevelCount}");
+            Debug.Log($"地形数量: {config.TestLevelCount}");
 
             var results = RunBatchAnalysis(config);
 
@@ -1601,7 +1597,7 @@ namespace DGuo.Client.TileMatch.Analysis
             GUILayout.Label("测试参数", EditorStyles.boldLabel);
             EditorGUILayout.BeginVertical("box");
 
-            config.TestLevelCount = EditorGUILayout.IntField(new GUIContent("测试关卡数量", "要测试的关卡数量"), config.TestLevelCount);
+            config.TestLevelCount = EditorGUILayout.IntField(new GUIContent("测试地形数量", "要测试的地形数量"), config.TestLevelCount);
 
             EditorGUILayout.EndVertical();
             GUILayout.Space(10);
@@ -1626,7 +1622,7 @@ namespace DGuo.Client.TileMatch.Analysis
             EditorGUILayout.LabelField("固定种子值列表（逗号分隔）:");
             seedValuesString = EditorGUILayout.TextArea(seedValuesString, GUILayout.Height(40));
 
-            config.RunsPerLevel = EditorGUILayout.IntField(new GUIContent("每关卡运行次数", "每个关卡运行次数，用于生成多样化数据"), config.RunsPerLevel);
+            config.RunsPerLevel = EditorGUILayout.IntField(new GUIContent("每地形运行次数", "每个地形运行次数，用于生成多样化数据"), config.RunsPerLevel);
 
             EditorGUILayout.EndVertical();
             GUILayout.Space(10);
@@ -1649,16 +1645,7 @@ namespace DGuo.Client.TileMatch.Analysis
             }
 
             config.RequiredResultsPerTerrain = EditorGUILayout.IntField(new GUIContent("每地形需要结果数量", "每个地形需要找到的符合条件结果数量"), config.RequiredResultsPerTerrain);
-
-            EditorGUILayout.EndVertical();
-            GUILayout.Space(10);
-
-            // === 策略切换配置 ===
-            GUILayout.Label("策略切换配置", EditorStyles.boldLabel);
-            EditorGUILayout.BeginVertical("box");
-
-            config.EnableStrategicSwitching = EditorGUILayout.Toggle(new GUIContent("启用策略性配置切换", "是否启用策略性配置切换"), config.EnableStrategicSwitching);
-            config.MaxConfigAttemptsPerTerrain = EditorGUILayout.IntField(new GUIContent("每地形最大尝试配置数量", "每个地形最大尝试配置数量"), config.MaxConfigAttemptsPerTerrain);
+            config.MaxConfigAttemptsPerTerrain = EditorGUILayout.IntField(new GUIContent("每地形最大尝试配置数量", "每个地形最多尝试多少个配置组合"), config.MaxConfigAttemptsPerTerrain);
 
             EditorGUILayout.EndVertical();
             GUILayout.Space(10);
@@ -1721,7 +1708,7 @@ namespace DGuo.Client.TileMatch.Analysis
 
             Debug.Log($"=== 开始批量分析（自定义配置） ===");
             Debug.Log($"配置详情: {config.GetConfigDescription()}");
-            Debug.Log($"关卡数量: {config.TestLevelCount}");
+            Debug.Log($"地形数量: {config.TestLevelCount}");
 
             var results = BattleAnalyzerRunner.RunBatchAnalysis(config);
 
