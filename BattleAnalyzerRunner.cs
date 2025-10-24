@@ -157,6 +157,17 @@ namespace DGuo.Client.TileMatch.Analysis
         }
 
         /// <summary>
+        /// 最佳候选记录 - 用于追踪未达标批次的最佳配置
+        /// </summary>
+        public class BestCandidateRecord
+        {
+            public int FoundCount { get; set; } // 找到的结果数量
+            public int[] ExperienceMode { get; set; } // 体验模式配置
+            public int ColorCount { get; set; } // 花色数量
+            public List<AnalysisResult> Results { get; set; } = new List<AnalysisResult>(); // 该配置的所有结果
+        }
+
+        /// <summary>
         /// 批量运行配置 - 简化版本
         /// </summary>
         [System.Serializable]
@@ -364,41 +375,15 @@ namespace DGuo.Client.TileMatch.Analysis
         // ========== 静态缓存变量 ==========
         private static List<CsvLevelConfig> _csvConfigs = null;
         private static readonly object _csvLock = new object();
-        // ========== 性能优化：使用ConcurrentDictionary避免读取锁竞争 ==========
-        private static System.Collections.Concurrent.ConcurrentDictionary<int, LevelData> _levelDataCache =
-            new System.Collections.Concurrent.ConcurrentDictionary<int, LevelData>();
+        private static Dictionary<int, LevelData> _levelDataCache = new Dictionary<int, LevelData>();
+        private static readonly object _levelDataCacheLock = new object();
         private static readonly Dictionary<int, List<int>> _standardColorsCache = new Dictionary<int, List<int>>();
         private static List<int> _colorPoolCache = null; // 花色池缓存
         private static readonly System.Threading.ThreadLocal<System.Random> _threadRandom =
             new System.Threading.ThreadLocal<System.Random>(() =>
                 new System.Random(unchecked(Environment.TickCount * 31 + System.Threading.Thread.CurrentThread.ManagedThreadId)));
-
+        
         private static int _globalUniqueIdCounter = 0; // 并发下生成唯一id计数
-
-        // ========== 线程本地算法对象池（关键优化：避免并发new导致的缓存失效风暴） ==========
-        private static readonly System.Threading.ThreadLocal<DGuo.Client.TileMatch.DesignerAlgo.RuleBasedAlgo.RuleBasedAlgorithm> _threadLocalAlgorithm =
-            new System.Threading.ThreadLocal<DGuo.Client.TileMatch.DesignerAlgo.RuleBasedAlgo.RuleBasedAlgorithm>(() =>
-            {
-                var algo = new DGuo.Client.TileMatch.DesignerAlgo.RuleBasedAlgo.RuleBasedAlgorithm();
-                // ⚠️ 并发优化：禁用Debug.Log避免锁竞争
-                // Debug.Log($"[对象池] 线程{System.Threading.Thread.CurrentThread.ManagedThreadId}创建算法实例");
-                return algo;
-            });
-
-        // ========== 性能监控：全局算法耗时统计（用于对比并发/串行性能） ==========
-        private static System.Collections.Concurrent.ConcurrentBag<long> _globalAlgorithmTimes = null;
-        private static int _diagnosticLogCount = 0; // 诊断日志计数器（线程安全递增）
-
-        // ========== 性能诊断：累计各阶段耗时（使用Interlocked原子操作，零锁开销）==========
-        private static long _terrainAnalysisTimeMs = 0;
-        private static long _quotaAllocationTimeMs = 0;
-        private static long _colorAssignmentTimeMs = 0;
-        private static long _evaluationTimeMs = 0;
-
-        private static void RecordAlgorithmTime(long milliseconds)
-        {
-            _globalAlgorithmTimes?.Add(milliseconds);
-        }
 
         // ========== CSV配置管理器 ==========
 
@@ -747,6 +732,148 @@ namespace DGuo.Client.TileMatch.Analysis
         // ========== 核心分析方法 ==========
 
         /// <summary>
+        /// 增量CSV写入器 - 支持实时写入和崩溃恢复
+        /// </summary>
+        public class IncrementalCsvWriter
+        {
+            private StreamWriter _writer;
+            private string _tempFilePath;
+            private string _finalFilePath;
+            private DateTime _lastFlushTime;
+            private int _recordsSinceLastFlush;
+            private int _totalRecordsWritten;
+
+            // 配置参数
+            private const int FLUSH_INTERVAL_RECORDS = 50;     // 每50条记录触发
+            private const int FLUSH_INTERVAL_SECONDS = 300;    // 每5分钟触发
+            private const int FLUSH_MEMORY_LIMIT = 500;        // 超500条强制触发
+
+            /// <summary>
+            /// 初始化增量写入器
+            /// </summary>
+            public IncrementalCsvWriter(string finalPath)
+            {
+                _finalFilePath = finalPath;
+                _tempFilePath = finalPath + ".tmp";
+                _lastFlushTime = DateTime.Now;
+                _recordsSinceLastFlush = 0;
+                _totalRecordsWritten = 0;
+
+                // 确保目录存在
+                var directory = Path.GetDirectoryName(_tempFilePath);
+                if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
+                {
+                    Directory.CreateDirectory(directory);
+                }
+
+                // 创建临时文件并写入表头
+                _writer = new StreamWriter(_tempFilePath, false, Encoding.UTF8, FILE_BUFFER_SIZE);
+                _writer.WriteLine("UniqueId,Batch,TerrainId,LevelName,AlgorithmName,ExperienceMode,ColorCount,TotalTiles,RandomSeed," +
+                                 "GameCompleted,GameDurationMs,CompletionStatus,InitialMinCost," +
+                                 "DifficultyPosition,PeakDockCount,PressureValues," +
+                                 "PressureValueMean,PressureValueMin,PressureValueMax,PressureValueStdDev,DifficultyScore,FinalDifficulty," +
+                                 "ConsecutiveLowPressureCount,TotalEarlyLowPressureCount,ErrorMessage");
+                _writer.Flush();
+            }
+
+            /// <summary>
+            /// 写入单条记录
+            /// </summary>
+            public void WriteRecord(AnalysisResult result)
+            {
+                string expMode = $"[{string.Join(",", result.ExperienceMode)}]";
+                string pressureValues = result.PressureValues.Count > 1
+                    ? string.Join(",", result.PressureValues.Take(result.PressureValues.Count - 1))
+                    : "";
+
+                _writer.WriteLine($"{result.UniqueId},\"{(result.BatchName ?? "")}\",{result.TerrainId},{result.LevelName},{result.AlgorithmName},\"{expMode}\",{result.ColorCount},{result.TotalTiles},{result.RandomSeed}," +
+                                 $"{result.GameCompleted},{result.GameDurationMs},\"{result.CompletionStatus}\",{result.InitialMinCost}," +
+                                 $"{result.DifficultyPosition:F4},{result.PeakDockCount},\"{pressureValues}\"," +
+                                 $"{result.PressureValueMean:F4},{result.PressureValueMin},{result.PressureValueMax},{result.PressureValueStdDev:F4},{result.DifficultyScore:F2},{result.FinalDifficulty}," +
+                                 $"{result.ConsecutiveLowPressureCount},{result.TotalEarlyLowPressureCount},\"{result.ErrorMessage ?? ""}\"");
+
+                _recordsSinceLastFlush++;
+                _totalRecordsWritten++;
+
+                // 检查是否需要刷新
+                CheckAndFlush();
+            }
+
+            /// <summary>
+            /// 检查并触发刷新
+            /// </summary>
+            private void CheckAndFlush()
+            {
+                bool shouldFlush = false;
+
+                // 条件1：记录数达到阈值
+                if (_recordsSinceLastFlush >= FLUSH_INTERVAL_RECORDS)
+                {
+                    shouldFlush = true;
+                }
+
+                // 条件2：时间超过阈值
+                if ((DateTime.Now - _lastFlushTime).TotalSeconds >= FLUSH_INTERVAL_SECONDS)
+                {
+                    shouldFlush = true;
+                }
+
+                // 条件3：内存限制（防止OOM）
+                if (_recordsSinceLastFlush >= FLUSH_MEMORY_LIMIT)
+                {
+                    shouldFlush = true;
+                }
+
+                if (shouldFlush)
+                {
+                    Flush();
+                }
+            }
+
+            /// <summary>
+            /// 立即刷新到磁盘
+            /// </summary>
+            public void Flush()
+            {
+                if (_writer != null)
+                {
+                    _writer.Flush();
+                    _recordsSinceLastFlush = 0;
+                    _lastFlushTime = DateTime.Now;
+                }
+            }
+
+            /// <summary>
+            /// 关闭写入器并重命名为正式文件
+            /// </summary>
+            public void Close()
+            {
+                if (_writer != null)
+                {
+                    _writer.Flush();
+                    _writer.Close();
+                    _writer.Dispose();
+                    _writer = null;
+
+                    // 重命名临时文件为正式文件
+                    if (File.Exists(_tempFilePath))
+                    {
+                        if (File.Exists(_finalFilePath))
+                        {
+                            File.Delete(_finalFilePath);
+                        }
+                        File.Move(_tempFilePath, _finalFilePath);
+                    }
+                }
+            }
+
+            /// <summary>
+            /// 获取已写入记录数
+            /// </summary>
+            public int TotalRecordsWritten => _totalRecordsWritten;
+        }
+
+        /// <summary>
         /// 运行单个关卡分析
         /// </summary>
         public static AnalysisResult RunSingleLevelAnalysis(string levelName, int[] experienceMode, int colorCount, int randomSeed = -1)
@@ -782,42 +909,15 @@ namespace DGuo.Client.TileMatch.Analysis
                 result.TotalTiles = CalculateTotalTileCount(levelData);
 
                 // 2. 创建Tile列表并分配花色
-                int levelIdForColorSeed = 0; int.TryParse(levelName, out levelIdForColorSeed);
-                var tiles = CreateTileListFromLevelData(levelData, levelIdForColorSeed); // 使用缓存优化
+                var tiles = CreateTileListFromLevelData(levelData);
                 // 基于(seed, terrainId, colorCount)的确定性洗牌,保证并发与串行一致
+                int levelIdForColorSeed = 0; int.TryParse(levelName, out levelIdForColorSeed);
                 var availableColors = CreateAvailableColorsDeterministic(colorCount, randomSeed, levelIdForColorSeed);
 
-                // ========== 使用线程本地算法对象池（复用模式，避免并发new） ==========
-                var algorithmStopwatch = System.Diagnostics.Stopwatch.StartNew();
-
-                var algorithm = _threadLocalAlgorithm.Value; // 复用线程本地实例
+                // 使用RuleBasedAlgorithm进行花色分配(内部已自动执行虚拟游戏模拟)
+                var algorithm = new DGuo.Client.TileMatch.DesignerAlgo.RuleBasedAlgo.RuleBasedAlgorithm();
                 algorithm.InitializeRandomSeed(randomSeed);
                 algorithm.AssignTileTypes(tiles, experienceMode, availableColors);
-
-                algorithmStopwatch.Stop();
-                long algorithmMs = algorithmStopwatch.ElapsedMilliseconds;
-                // ========== 诊断：禁用性能监控，测试ConcurrentBag是否有瓶颈 ==========
-                // RecordAlgorithmTime(algorithmMs);
-
-                // ========== 诊断：输出算法内部计时（前30次，观察快慢差异） ==========
-                // ⚠️ 并发优化：禁用Debug.Log避免锁竞争（Unity的Debug.Log在并发下会导致线程串行等待）
-                // int logIndex = System.Threading.Interlocked.Increment(ref _diagnosticLogCount);
-                // if (logIndex <= 30)
-                // {
-                //     var timing = algorithm.LastExecutionTiming;
-                //     Debug.Log($"[算法计时#{logIndex}] Seed{randomSeed} 总{algorithmMs}ms = " +
-                //              $"地形{timing.TerrainAnalysisMs}ms + " +
-                //              $"配额{timing.QuotaAllocationMs}ms + " +
-                //              $"分配{timing.ColorAssignmentMs}ms + " +
-                //              $"评估{timing.EvaluationMs}ms");
-                // }
-
-                // ========== 诊断：收集各阶段timing数据（使用Interlocked原子操作，零锁开销）==========
-                var timing = algorithm.LastExecutionTiming;
-                System.Threading.Interlocked.Add(ref _terrainAnalysisTimeMs, timing.TerrainAnalysisMs);
-                System.Threading.Interlocked.Add(ref _quotaAllocationTimeMs, timing.QuotaAllocationMs);
-                System.Threading.Interlocked.Add(ref _colorAssignmentTimeMs, timing.ColorAssignmentMs);
-                System.Threading.Interlocked.Add(ref _evaluationTimeMs, timing.EvaluationMs);
 
                 // 获取真实使用的算法名称
                 result.AlgorithmName = algorithm.AlgorithmName;
@@ -908,7 +1008,7 @@ namespace DGuo.Client.TileMatch.Analysis
         }
 
         /// <summary>
-        /// 加载关卡数据 - 使用ConcurrentDictionary优化并发性能
+        /// 加载关卡数据 - 增加缓存机制优化
         /// </summary>
         private static LevelData LoadLevelData(string levelName)
         {
@@ -917,10 +1017,16 @@ namespace DGuo.Client.TileMatch.Analysis
                 int levelId = 0;
                 int.TryParse(levelName, out levelId);
 
-                // ========== 性能优化：无锁缓存读取 ==========
-                if (levelId > 0 && _levelDataCache.TryGetValue(levelId, out LevelData cachedLevel))
+                // 检查缓存(并发安全)
+                if (levelId > 0)
                 {
-                    return cachedLevel;
+                    lock (_levelDataCacheLock)
+                    {
+                        if (_levelDataCache.TryGetValue(levelId, out LevelData cachedLevel))
+                        {
+                            return cachedLevel;
+                        }
+                    }
                 }
 
                 string jsonFileName = levelName.EndsWith(".json") ? levelName : $"{levelName}.json";
@@ -936,10 +1042,13 @@ namespace DGuo.Client.TileMatch.Analysis
                 string jsonContent = File.ReadAllText(jsonPath);
                 var levelData = JsonUtility.FromJson<LevelData>(jsonContent);
 
-                // ========== 性能优化：无锁缓存写入（原子操作） ==========
+                // 缓存结果(并发安全)
                 if (levelId > 0 && levelData != null)
                 {
-                    _levelDataCache.TryAdd(levelId, levelData);
+                    lock (_levelDataCacheLock)
+                    {
+                        _levelDataCache[levelId] = levelData;
+                    }
                 }
 
                 return levelData;
@@ -951,53 +1060,29 @@ namespace DGuo.Client.TileMatch.Analysis
             }
         }
 
-        // ========== 性能优化：线程本地Tile缓存（消除最大瓶颈：Tile创建开销） ==========
-        // 每个线程为每个地形保留一套Tile对象，避免重复创建100,000个Tile
-        [ThreadStatic] private static Dictionary<int, List<Tile>> _threadLocalTileCache;
-
         /// <summary>
-        /// 从LevelData创建Tile列表 - 使用线程本地缓存，避免重复创建
+        /// 从LevelData创建Tile列表
         /// </summary>
-        private static List<Tile> CreateTileListFromLevelData(LevelData levelData, int terrainId)
+        private static List<Tile> CreateTileListFromLevelData(LevelData levelData)
         {
-            if (_threadLocalTileCache == null)
-            {
-                _threadLocalTileCache = new Dictionary<int, List<Tile>>();
-                // ⚠️ 并发优化：禁用Debug.Log避免锁竞争
-                // Debug.Log($"[Tile缓存] 线程{System.Threading.Thread.CurrentThread.ManagedThreadId}创建缓存");
-            }
+            var tiles = new List<Tile>();
 
-            // 尝试从线程本地缓存获取
-            if (_threadLocalTileCache.TryGetValue(terrainId, out var cachedTiles))
-            {
-                // 重置所有Tile的ElementValue为0（算法会重新分配）
-                foreach (var tile in cachedTiles)
-                {
-                    tile.SetElementValue(0);
-                    tile.runtimeDependencies.Clear(); // 清空运行时依赖
-                }
-                return cachedTiles;
-            }
-
-            // 首次创建并缓存（每个线程×每个地形只创建一次）
-            var newTiles = new List<Tile>();
             foreach (var layer in levelData.Layers)
             {
                 foreach (var tileData in layer.tiles)
                 {
                     var tile = new Tile(tileData);
+
                     if (tileData.IsConst)
                     {
                         tile.SetElementValue(tileData.ConstElementValue);
                     }
-                    newTiles.Add(tile);
+
+                    tiles.Add(tile);
                 }
             }
 
-            // 缓存到线程本地
-            _threadLocalTileCache[terrainId] = newTiles;
-
-            return newTiles;
+            return tiles;
         }
 
         /// <summary>
@@ -1128,29 +1213,28 @@ namespace DGuo.Client.TileMatch.Analysis
         /// </summary>
         public static List<AnalysisResult> RunBatchAnalysis(RunConfig config)
         {
-            AlgoLogger.InitializeMainThread();
             CsvConfigManager.LoadCsvConfigs();
             var results = new List<AnalysisResult>();
 
             int maxColorPoolSize = GetColorPoolSize();
-            // ========== 诊断模式：完全禁用日志输出 ==========
-            // Debug.Log($"[BattleAnalyzer] 花色池大小: {maxColorPoolSize}种花色");
-            // Debug.Log($"开始批量分析: {config.GetConfigDescription()}");
+            Debug.Log($"[BattleAnalyzer] 花色池大小: {maxColorPoolSize}种花色");
+            Debug.Log($"开始批量分析: {config.GetConfigDescription()}");
 
             bool useMultiBatch = config.BatchFilters != null && config.BatchFilters.Count > 0;
 
-            // 内存监控初始化
-            long initialMemory = GC.GetTotalMemory(false) / 1024 / 1024;
+            // 初始化增量CSV写入器
+            var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+            string seedSuffix = config.UseFixedSeed ? "_FixedSeeds" : "_Random";
+            string filterSuffix = config.IsFilteringEnabled ? "_Filtered" : "";
+            var csvPath = Path.Combine(config.OutputDirectory, $"BattleAnalysis{seedSuffix}{filterSuffix}_{timestamp}.csv");
+            IncrementalCsvWriter csvWriter = null;
 
-            // ========== 性能监控：初始化全局统计 ==========
-            _globalAlgorithmTimes = new System.Collections.Concurrent.ConcurrentBag<long>();
-            _diagnosticLogCount = 0; // 重置诊断日志计数器
+            try
+            {
+                csvWriter = new IncrementalCsvWriter(csvPath);
 
-            // 重置阶段统计累加器
-            _terrainAnalysisTimeMs = 0;
-            _quotaAllocationTimeMs = 0;
-            _colorAssignmentTimeMs = 0;
-            _evaluationTimeMs = 0;
+                // 内存监控初始化
+                long initialMemory = GC.GetTotalMemory(false) / 1024 / 1024;
 
             // 预计算总任务数
             int totalTasks = 0;
@@ -1192,9 +1276,6 @@ namespace DGuo.Client.TileMatch.Analysis
             results.Capacity = totalTasks;
             int completedTasks = 0;
             object resultsLock = new object();
-
-            // ========== 诊断：记录开始时间 ==========
-            var globalStopwatch = System.Diagnostics.Stopwatch.StartNew();
 
             // 预热: 加载行对应的关卡数据,避免工作线程首次IO
             foreach (var (rowIndex, terrainId, _, _) in rowConfigs)
@@ -1241,11 +1322,15 @@ namespace DGuo.Client.TileMatch.Analysis
                 {
                     var batchFoundCount = new Dictionary<string, int>();
                     var batchCompleted = new Dictionary<string, bool>();
+                    var bestCandidates = new Dictionary<string, BestCandidateRecord>(); // 最佳候选追踪
+                    var writtenResults = new Dictionary<string, HashSet<string>>(); // 已写入结果追踪(UniqueId)
                     foreach (var bf in config.BatchFilters)
                     {
                         var name = string.IsNullOrEmpty(bf.BatchName) ? "Batch" : bf.BatchName;
                         batchFoundCount[name] = 0;
                         batchCompleted[name] = false;
+                        bestCandidates[name] = new BestCandidateRecord { FoundCount = 0 };
+                        writtenResults[name] = new HashSet<string>(); // 初始化已写入追踪
                     }
                     Func<bool> AllBatchesDone = () => batchCompleted.Values.All(v => v);
 
@@ -1271,12 +1356,11 @@ namespace DGuo.Client.TileMatch.Analysis
                                 seedAttempts++;
                                 Interlocked.Increment(ref completedTasks);
 #if !VERBOSE_ANALYZER_LOGGING
-                                // ========== 诊断模式：禁用进度日志 ==========
-                                // int ct = Volatile.Read(ref completedTasks);
-                                // if (ct % 500 == 0 || ct == 1)
-                                // {
-                                //     Debug.Log($"[进度] {ct}/{totalTasks} ({100f * ct / totalTasks:F1}%) - 当前: 行{rowIndex}|地形{terrainId}");
-                                // }
+                                int ct = Volatile.Read(ref completedTasks);
+                                if (ct % 500 == 0 || ct == 1)
+                                {
+                                    Debug.Log($"[进度] {ct}/{totalTasks} ({100f * ct / totalTasks:F1}%) - 当前: 行{rowIndex}|地形{terrainId}");
+                                }
 #endif
                                 var raw = RunSingleLevelAnalysis(levelName, experienceMode, colorCount, randomSeed);
                                 raw.RowIndex = rowIndex;
@@ -1292,17 +1376,43 @@ namespace DGuo.Client.TileMatch.Analysis
                                 {
                                     var name = string.IsNullOrEmpty(bf.BatchName) ? "Batch" : bf.BatchName;
                                     if (batchCompleted[name]) continue;
-                                    if (bf.Matches(agg))
+
+                                    // 检查是否符合筛选条件
+                                    bool matches = bf.Matches(agg);
+                                    int currentCount = currentSeedsResults.Count;
+
+                                    // 更新最佳候选（只在找到更多结果时更新）
+                                    // 优化: 延迟UniqueId生成，在最终输出时再生成
+                                    if (currentCount > bestCandidates[name].FoundCount)
                                     {
-                                        // 添加所有种子结果
+                                        bestCandidates[name].FoundCount = currentCount;
+                                        bestCandidates[name].ExperienceMode = experienceMode;
+                                        bestCandidates[name].ColorCount = colorCount;
+                                        bestCandidates[name].Results.Clear();
+                                        foreach (var r in currentSeedsResults)
+                                        {
+                                            // 延迟生成UniqueId，先设为null
+                                            var copy = CloneForBatch(r, name, null);
+                                            bestCandidates[name].Results.Add(copy);
+                                        }
+                                    }
+
+                                    // 如果符合筛选条件，输出结果
+                                    if (matches)
+                                    {
+                                        // 添加所有种子结果并写入CSV
                                         foreach (var r in currentSeedsResults)
                                         {
                                             var uid = $"BA_{Interlocked.Increment(ref _globalUniqueIdCounter):D6}";
                                             var copy = CloneForBatch(r, name, uid);
-                                            lock (resultsLock) results.Add(copy);
+                                            lock (resultsLock)
+                                            {
+                                                results.Add(copy);
+                                                csvWriter?.WriteRecord(copy);
+                                                writtenResults[name].Add(uid); // 记录已写入
+                                            }
                                         }
 
-                                        // ✅ 修复: 计数应该按配置组计数，而不是按种子数量计数
                                         // 一个配置包含多个种子，但只算作1个找到的结果
                                         batchFoundCount[name]++;
 
@@ -1319,10 +1429,12 @@ namespace DGuo.Client.TileMatch.Analysis
                             // - 只有当所有未完成的批次都达到空运行上限时才退出配置
                             // - 这样可以避免某批次提前退出而错过后续种子中的有效结果
                             var consecutiveMissesByBatch = new Dictionary<string, int>();
+                            var currentConfigResults = new Dictionary<string, List<AnalysisResult>>(); // 当前配置各批次的结果
                             foreach (var bf in config.BatchFilters)
                             {
                                 var name = string.IsNullOrEmpty(bf.BatchName) ? "Batch" : bf.BatchName;
                                 consecutiveMissesByBatch[name] = 0;
+                                currentConfigResults[name] = new List<AnalysisResult>();
                             }
 
                             // 检查是否所有未完成的批次都已达到空运行上限
@@ -1350,12 +1462,11 @@ namespace DGuo.Client.TileMatch.Analysis
                                 seedAttempts++;
                                 Interlocked.Increment(ref completedTasks);
 #if !VERBOSE_ANALYZER_LOGGING
-                                // ========== 诊断模式：禁用进度日志 ==========
-                                // int ct = Volatile.Read(ref completedTasks);
-                                // if (ct % 500 == 0 || ct == 1)
-                                // {
-                                //     Debug.Log($"[进度] {ct}/{totalTasks} ({100f * ct / totalTasks:F1}%) - 当前: 行{rowIndex}|地形{terrainId}");
-                                // }
+                                int ct = Volatile.Read(ref completedTasks);
+                                if (ct % 500 == 0 || ct == 1)
+                                {
+                                    Debug.Log($"[进度] {ct}/{totalTasks} ({100f * ct / totalTasks:F1}%) - 当前: 行{rowIndex}|地形{terrainId}");
+                                }
 #endif
                                 var raw = RunSingleLevelAnalysis(levelName, experienceMode, colorCount, randomSeed);
                                 raw.RowIndex = rowIndex;
@@ -1374,7 +1485,13 @@ namespace DGuo.Client.TileMatch.Analysis
                                     {
                                         var uid = $"BA_{Interlocked.Increment(ref _globalUniqueIdCounter):D6}";
                                         var copy = CloneForBatch(raw, name, uid);
-                                        lock (resultsLock) results.Add(copy);
+                                        lock (resultsLock)
+                                        {
+                                            results.Add(copy);
+                                            csvWriter?.WriteRecord(copy);
+                                            writtenResults[name].Add(uid); // 记录已写入
+                                        }
+                                        currentConfigResults[name].Add(copy); // 追踪当前配置的结果
                                         batchFoundCount[name]++;
                                         consecutiveMissesByBatch[name] = 0; // 重置该批次的连续未命中计数
                                         anyBatchMatched = true;
@@ -1399,9 +1516,62 @@ namespace DGuo.Client.TileMatch.Analysis
                                     }
                                 }
 
-                                // ========== 性能优化：移除强制GC，避免并发STW暴击 ==========
-                                // 原代码每200次强制GC导致所有线程暂停100-200ms
-                                // 现在让CLR自动管理GC，避免不必要的STW
+                                int ct2 = Volatile.Read(ref completedTasks);
+                                if (ct2 % 200 == 0)
+                                {
+                                    GC.Collect(1, GCCollectionMode.Forced);
+                                    GC.WaitForPendingFinalizers();
+                                }
+                            }
+
+                            // 当前配置结束，更新最佳候选
+                            foreach (var bf in config.BatchFilters)
+                            {
+                                var name = string.IsNullOrEmpty(bf.BatchName) ? "Batch" : bf.BatchName;
+                                int currentCount = currentConfigResults[name].Count;
+                                if (currentCount > bestCandidates[name].FoundCount)
+                                {
+                                    bestCandidates[name].FoundCount = currentCount;
+                                    bestCandidates[name].ExperienceMode = experienceMode;
+                                    bestCandidates[name].ColorCount = colorCount;
+                                    bestCandidates[name].Results = new List<AnalysisResult>(currentConfigResults[name]);
+                                }
+                            }
+                        }
+                    }
+
+                    // 配置循环结束，输出未达标但有最佳候选的批次结果
+                    foreach (var bf in config.BatchFilters)
+                    {
+                        var name = string.IsNullOrEmpty(bf.BatchName) ? "Batch" : bf.BatchName;
+
+                        // 如果批次未达标且有最佳候选（找到了一些结果但不够）
+                        if (!batchCompleted[name] && bestCandidates[name].FoundCount > 0)
+                        {
+                            Debug.Log($"[最佳候选] 批次 {name} 未达到要求的 {config.RequiredResultsPerTerrain} 个结果，" +
+                                     $"输出最佳候选配置（找到 {bestCandidates[name].FoundCount} 个结果）: " +
+                                     $"ExpMode=[{string.Join(",", bestCandidates[name].ExperienceMode)}], " +
+                                     $"ColorCount={bestCandidates[name].ColorCount}");
+
+                            // 输出最佳候选的所有结果
+                            foreach (var bestResult in bestCandidates[name].Results)
+                            {
+                                lock (resultsLock)
+                                {
+                                    // 如果UniqueId为null，说明是延迟生成的（平均值筛选模式）
+                                    if (string.IsNullOrEmpty(bestResult.UniqueId))
+                                    {
+                                        bestResult.UniqueId = $"BA_{Interlocked.Increment(ref _globalUniqueIdCounter):D6}";
+                                    }
+
+                                    // 检查是否已写入（即时筛选模式下可能已写入）
+                                    if (!writtenResults[name].Contains(bestResult.UniqueId))
+                                    {
+                                        results.Add(bestResult);
+                                        csvWriter?.WriteRecord(bestResult);
+                                        writtenResults[name].Add(bestResult.UniqueId);
+                                    }
+                                }
                             }
                         }
                     }
@@ -1429,12 +1599,11 @@ namespace DGuo.Client.TileMatch.Analysis
                                 seedAttempts++;
                                 Interlocked.Increment(ref completedTasks);
 #if !VERBOSE_ANALYZER_LOGGING
-                                // ========== 诊断模式：禁用进度日志 ==========
-                                // int ct = Volatile.Read(ref completedTasks);
-                                // if (ct % 500 == 0 || ct == 1)
-                                // {
-                                //     Debug.Log($"[进度] {ct}/{totalTasks} ({100f * ct / totalTasks:F1}%) - 当前: 行{rowIndex}|地形{terrainId}");
-                                // }
+                                int ct = Volatile.Read(ref completedTasks);
+                                if (ct % 500 == 0 || ct == 1)
+                                {
+                                    Debug.Log($"[进度] {ct}/{totalTasks} ({100f * ct / totalTasks:F1}%) - 当前: 行{rowIndex}|地形{terrainId}");
+                                }
 #endif
                                 var result = RunSingleLevelAnalysis(levelName, experienceMode, colorCount, randomSeed);
                                 result.RowIndex = rowIndex;
@@ -1445,7 +1614,14 @@ namespace DGuo.Client.TileMatch.Analysis
                             var aggregatedResults = AggregateResultsByConfig(currentConfigResults);
                             if (aggregatedResults.Count > 0 && config.MatchesCriteria(aggregatedResults[0]))
                             {
-                                lock (resultsLock) results.AddRange(currentConfigResults);
+                                lock (resultsLock)
+                                {
+                                    results.AddRange(currentConfigResults);
+                                    foreach (var r in currentConfigResults)
+                                    {
+                                        csvWriter?.WriteRecord(r);
+                                    }
+                                }
                                 rowCompleted = true;
                             }
                         }
@@ -1463,12 +1639,11 @@ namespace DGuo.Client.TileMatch.Analysis
                                 seedAttempts++;
                                 Interlocked.Increment(ref completedTasks);
 #if !VERBOSE_ANALYZER_LOGGING
-                                // ========== 诊断模式：禁用进度日志 ==========
-                                // int ct = Volatile.Read(ref completedTasks);
-                                // if (ct % 500 == 0 || ct == 1)
-                                // {
-                                //     Debug.Log($"[进度] {ct}/{totalTasks} ({100f * ct / totalTasks:F1}%) - 当前: 行{rowIndex}|地形{terrainId}");
-                                // }
+                                int ct = Volatile.Read(ref completedTasks);
+                                if (ct % 500 == 0 || ct == 1)
+                                {
+                                    Debug.Log($"[进度] {ct}/{totalTasks} ({100f * ct / totalTasks:F1}%) - 当前: 行{rowIndex}|地形{terrainId}");
+                                }
 #endif
                                 var result = RunSingleLevelAnalysis(levelName, experienceMode, colorCount, randomSeed);
                                 result.RowIndex = rowIndex;
@@ -1476,8 +1651,11 @@ namespace DGuo.Client.TileMatch.Analysis
                                 result.UniqueId = $"BA_{Interlocked.Increment(ref _globalUniqueIdCounter):D6}";
 
                                 int ct2 = Volatile.Read(ref completedTasks);
-                                // ========== 性能优化：移除强制GC，避免并发STW暴击 ==========
-                                // 原代码每200次强制GC导致所有线程暂停100-200ms
+                                if (ct2 % 200 == 0)
+                                {
+                                    GC.Collect(1, GCCollectionMode.Forced);
+                                    GC.WaitForPendingFinalizers();
+                                }
 
                                 if (config.IsFilteringEnabled)
                                 {
@@ -1502,13 +1680,27 @@ namespace DGuo.Client.TileMatch.Analysis
                             {
                                 if (rowCompleted)
                                 {
-                                    lock (resultsLock) results.AddRange(currentConfigResults);
+                                    lock (resultsLock)
+                                    {
+                                        results.AddRange(currentConfigResults);
+                                        foreach (var r in currentConfigResults)
+                                        {
+                                            csvWriter?.WriteRecord(r);
+                                        }
+                                    }
                                     break;
                                 }
                             }
                             else
                             {
-                                lock (resultsLock) results.AddRange(currentConfigResults);
+                                lock (resultsLock)
+                                {
+                                    results.AddRange(currentConfigResults);
+                                    foreach (var r in currentConfigResults)
+                                    {
+                                        csvWriter?.WriteRecord(r);
+                                    }
+                                }
                             }
                         }
                     }
@@ -1530,62 +1722,21 @@ namespace DGuo.Client.TileMatch.Analysis
                 }
             }
 
-            // ========== 诊断：停止总时间计时 ==========
-            globalStopwatch.Stop();
-            double totalSeconds = globalStopwatch.Elapsed.TotalSeconds;
+                long finalMemory = GC.GetTotalMemory(false) / 1024 / 1024;
+                Debug.Log($"[内存监控] 最终内存: {finalMemory}MB, 总增长: {finalMemory - initialMemory}MB");
+                Debug.Log($"批量分析完成: {results.Count} 个任务结果");
 
-            long finalMemory = GC.GetTotalMemory(false) / 1024 / 1024;
-            Debug.Log($"[内存监控] 最终内存: {finalMemory}MB, 总增长: {finalMemory - initialMemory}MB");
-            Debug.Log($"========== 总耗时：{totalSeconds:F2}秒 ==========");
-
-            // ========== 诊断：输出距离计算统计（验证数组优化是否生效） ==========
-            var distanceStats = DGuo.Client.TileMatch.DesignerAlgo.RuleBasedAlgo.TerrainAnalyzer.GetAndResetDistanceCalcStats();
-            if (distanceStats.count > 0)
-            {
-                double avgMs = (double)distanceStats.totalMs / distanceStats.count;
-                Debug.Log($"[距离计算统计] 总调用{distanceStats.count}次 | 总耗时{distanceStats.totalMs}ms | 平均{avgMs:F2}ms/次");
+                return results;
             }
-
-            // ========== 诊断：输出Analyze统计（验证是否为真正瓶颈） ==========
-            var analyzeStats = DGuo.Client.TileMatch.DesignerAlgo.RuleBasedAlgo.VirtualGameSimulator.GetAndResetAnalyzeStats();
-            if (analyzeStats.count > 0)
+            finally
             {
-                double avgMs = (double)analyzeStats.totalMs / analyzeStats.count;
-                Debug.Log($"[Analyze统计] 总调用{analyzeStats.count}次 | 总耗时{analyzeStats.totalMs}ms | 平均{avgMs:F2}ms/次");
+                // 确保CSV写入器被正确关闭
+                if (csvWriter != null)
+                {
+                    csvWriter.Close();
+                    Debug.Log($"CSV文件已保存: {csvPath}, 共写入 {csvWriter.TotalRecordsWritten} 条记录");
+                }
             }
-
-            // ========== 诊断：输出算法各阶段耗时统计 ==========
-            long terrainTotal = _terrainAnalysisTimeMs;
-            long quotaTotal = _quotaAllocationTimeMs;
-            long assignTotal = _colorAssignmentTimeMs;
-            long evalTotal = _evaluationTimeMs;
-            long sumOfParts = terrainTotal + quotaTotal + assignTotal + evalTotal;
-
-            Debug.Log($"[算法阶段统计] 地形分析:{terrainTotal}ms | 配额管理:{quotaTotal}ms | 花色分配:{assignTotal}ms | 动态评估:{evalTotal}ms");
-            Debug.Log($"[算法阶段统计] 四阶段总计:{sumOfParts}ms (占总耗时{100.0 * sumOfParts / (totalSeconds * 1000):F1}%)");
-
-            // ========== 性能监控报告（已禁用，测试ConcurrentBag瓶颈） ==========
-            /*
-            if (_globalAlgorithmTimes != null && _globalAlgorithmTimes.Count > 0)
-            {
-                var times = _globalAlgorithmTimes.ToArray();
-                var avgTime = times.Average();
-                var minTime = times.Min();
-                var maxTime = times.Max();
-                var p50Time = times.OrderBy(x => x).Skip(times.Length / 2).First();
-                var p95Time = times.OrderBy(x => x).Skip((int)(times.Length * 0.95)).First();
-
-                // 单行输出，减少Console锁竞争
-                Debug.Log($"[性能] 调用{times.Length}次 | 平均{avgTime:F1}ms | P50={p50Time}ms | P95={p95Time}ms | 最小{minTime}ms | 最大{maxTime}ms | 并发{(config.EnableParallel ? config.MaxParallelRows + "线程" : "关闭")}");
-
-                // 清理统计数据
-                _globalAlgorithmTimes = null;
-            }
-            */
-
-            Debug.Log($"批量分析完成: {results.Count} 个任务结果");
-
-            return results;
         }
 
         /// <summary>
@@ -1793,17 +1944,15 @@ namespace DGuo.Client.TileMatch.Analysis
 
             var results = RunBatchAnalysis(config);
 
-            var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
-            string seedSuffix = config.UseFixedSeed ? "_FixedSeeds" : "_Random";
-            string filterSuffix = config.IsFilteringEnabled ? "_Filtered" : "";
-            var csvPath = Path.Combine(config.OutputDirectory, $"BattleAnalysis{seedSuffix}{filterSuffix}_{timestamp}.csv");
-
-            ExportToCsv(results, csvPath);
+            // 增量写入已在RunBatchAnalysis内部完成，不需要再次调用ExportToCsv
 
             if (config.OutputPerConfigAverage)
             {
                 var aggregatedResults = AggregateResultsByConfig(results);
-                var aggregatedCsvPath = csvPath.Replace(".csv", "_Aggregated.csv");
+                var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+                string seedSuffix = config.UseFixedSeed ? "_FixedSeeds" : "_Random";
+                string filterSuffix = config.IsFilteringEnabled ? "_Filtered" : "";
+                var aggregatedCsvPath = Path.Combine(config.OutputDirectory, $"BattleAnalysis{seedSuffix}{filterSuffix}_{timestamp}_Aggregated.csv");
                 ExportAggregatedToCsv(aggregatedResults, aggregatedCsvPath);
             }
 
@@ -1836,6 +1985,16 @@ namespace DGuo.Client.TileMatch.Analysis
             private const string KEY_USE_AVERAGE_FILTERING = PREFS_PREFIX + "UseAverageFiltering";
             private const string KEY_REQUIRED_RESULTS = PREFS_PREFIX + "RequiredResultsPerTerrain";
             private const string KEY_MAX_CONFIG_ATTEMPTS = PREFS_PREFIX + "MaxConfigAttemptsPerTerrain";
+            private const string KEY_BATCH_FILTERS_JSON = PREFS_PREFIX + "BatchFiltersJson";
+
+            /// <summary>
+            /// BatchFilter列表的序列化包装类（Unity JsonUtility不支持直接序列化List）
+            /// </summary>
+            [System.Serializable]
+            private class BatchFilterListWrapper
+            {
+                public RunConfig.BatchFilter[] filters;
+            }
 
             private RunConfig config = new RunConfig();
             private Vector2 scrollPosition;
@@ -1867,10 +2026,12 @@ namespace DGuo.Client.TileMatch.Analysis
                     seedValuesString = string.Join(",", config.FixedSeedValues);
                 }
 
-                // 默认添加一个批次(沿用全局筛选参数), 方便直接开始多批配置
-                if (config.BatchFilters == null) config.BatchFilters = new List<RunConfig.BatchFilter>();
-                if (config.BatchFilters.Count == 0)
+                // 只在首次运行（没有保存过配置）时添加默认批次
+                // 如果用户手动清空了所有批次，LoadConfigFromPrefs会加载一个空列表（Count=0）
+                // 这种情况下不应该自动添加默认批次，尊重用户的选择
+                if (config.BatchFilters == null)
                 {
+                    config.BatchFilters = new List<RunConfig.BatchFilter>();
                     config.BatchFilters.Add(new RunConfig.BatchFilter
                     {
                         BatchName = "Batch-1",
@@ -1914,6 +2075,27 @@ namespace DGuo.Client.TileMatch.Analysis
                 config.UseAverageFiltering = EditorPrefs.GetBool(KEY_USE_AVERAGE_FILTERING, false);
                 config.RequiredResultsPerTerrain = EditorPrefs.GetInt(KEY_REQUIRED_RESULTS, 1);
                 config.MaxConfigAttemptsPerTerrain = EditorPrefs.GetInt(KEY_MAX_CONFIG_ATTEMPTS, 1000);
+
+                // 加载BatchFilters配置
+                string batchFiltersJson = EditorPrefs.GetString(KEY_BATCH_FILTERS_JSON, "");
+                if (!string.IsNullOrEmpty(batchFiltersJson))
+                {
+                    try
+                    {
+                        var wrapper = JsonUtility.FromJson<BatchFilterListWrapper>(batchFiltersJson);
+                        if (wrapper != null && wrapper.filters != null)
+                        {
+                            // 即使filters是空数组，也要替换掉默认的BatchFilters
+                            // 这样用户清空批次的选择也能被保存
+                            config.BatchFilters = new List<RunConfig.BatchFilter>(wrapper.filters);
+                        }
+                    }
+                    catch (System.Exception ex)
+                    {
+                        Debug.LogWarning($"[BattleAnalyzer] 加载批次筛选配置失败: {ex.Message}，将使用默认配置");
+                        config.BatchFilters = null; // 标记为需要使用默认配置
+                    }
+                }
             }
 
             /// <summary>
@@ -1940,6 +2122,17 @@ namespace DGuo.Client.TileMatch.Analysis
                 EditorPrefs.SetBool(KEY_USE_AVERAGE_FILTERING, config.UseAverageFiltering);
                 EditorPrefs.SetInt(KEY_REQUIRED_RESULTS, config.RequiredResultsPerTerrain);
                 EditorPrefs.SetInt(KEY_MAX_CONFIG_ATTEMPTS, config.MaxConfigAttemptsPerTerrain);
+
+                // 保存BatchFilters配置
+                if (config.BatchFilters != null)
+                {
+                    var wrapper = new BatchFilterListWrapper
+                    {
+                        filters = config.BatchFilters.ToArray()
+                    };
+                    string json = JsonUtility.ToJson(wrapper, false);
+                    EditorPrefs.SetString(KEY_BATCH_FILTERS_JSON, json);
+                }
             }
 
             private void OnGUI()
@@ -2155,17 +2348,15 @@ namespace DGuo.Client.TileMatch.Analysis
 
                 var results = BattleAnalyzerRunner.RunBatchAnalysis(config);
 
-                var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
-                string seedSuffix = config.UseFixedSeed ? "_FixedSeeds" : "_Random";
-                string filterSuffix = config.IsFilteringEnabled ? "_Filtered" : "";
-                var csvPath = Path.Combine(config.OutputDirectory, $"BattleAnalysis{seedSuffix}{filterSuffix}_{timestamp}.csv");
-
-                BattleAnalyzerRunner.ExportToCsv(results, csvPath);
+                // 增量写入已在RunBatchAnalysis内部完成，不需要再次调用ExportToCsv
 
                 if (config.OutputPerConfigAverage)
                 {
                     var aggregatedResults = BattleAnalyzerRunner.AggregateResultsByConfig(results);
-                    var aggregatedCsvPath = csvPath.Replace(".csv", "_Aggregated.csv");
+                    var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+                    string seedSuffix = config.UseFixedSeed ? "_FixedSeeds" : "_Random";
+                    string filterSuffix = config.IsFilteringEnabled ? "_Filtered" : "";
+                    var aggregatedCsvPath = Path.Combine(config.OutputDirectory, $"BattleAnalysis{seedSuffix}{filterSuffix}_{timestamp}_Aggregated.csv");
                     BattleAnalyzerRunner.ExportAggregatedToCsv(aggregatedResults, aggregatedCsvPath);
                 }
 
